@@ -1,0 +1,107 @@
+// Define area of interest and time range
+var aoi = etBoundary.geometry(); // area of interest
+var startDate = "2019-06-25";
+var endDate = "2021-11-27";
+
+// 1. Load HLS dataset for NDVI and EVI (Sentinel-2 and Landsat)
+var hlsL30Collection = ee
+  .ImageCollection("NASA/HLS/HLSL30/v002")
+  .filterBounds(aoi)
+  .filter(ee.Filter.date(startDate, endDate))
+  .filter(ee.Filter.lt("CLOUD_COVERAGE", 30));
+
+// Function to calculate NDVI and EVI
+var addNDVI = function (image) {
+  var ndvi = image.normalizedDifference(["B5", "B4"]).rename("NDVI"); // Red, NIR
+  return image.addBands(ndvi);
+};
+var addEVI = function (image) {
+  var evi = image
+    .expression("2.5 * ((NIR - RED) / (NIR + 6 * RED - 7.5 * BLUE + 1))", {
+      NIR: image.select("B5"),
+      RED: image.select("B4"),
+      BLUE: image.select("B2"),
+    })
+    .rename("EVI");
+  return image.addBands(evi);
+};
+var hlsWithIndices = hlsL30Collection.map(addNDVI).map(addEVI);
+
+// 2. Soil Moisture (SMAP)
+var soilMoisture = ee
+  .ImageCollection("NASA/SMAP/SPL4SMGP/007")
+  .filterBounds(aoi)
+  .filterDate(startDate, endDate)
+  .select("ssm");
+
+// 3. Land Surface Temperature (MODIS)
+var lst = ee
+  .ImageCollection("MODIS/061/MOD11A2")
+  .filterBounds(aoi)
+  .filterDate(startDate, endDate)
+  .select("LST_Day_1km")
+  .map(function (image) {
+    return image.multiply(0.02).subtract(273.15).rename("LST_Day_1km"); // Convert to Celsius
+  });
+
+// 4. Relative Humidity (ERA5-Land)
+var relativeHumidity = ee
+  .ImageCollection("ECMWF/ERA5_LAND/HOURLY")
+  .filterBounds(aoi)
+  .filterDate(startDate, endDate)
+  .select(["dewpoint_temperature_2m", "temperature_2m"])
+  .map(function (image) {
+    var temp = image.select("temperature_2m").subtract(273.15); // to Celsius
+    var dewpoint = image.select("dewpoint_temperature_2m").subtract(273.15); // to Celsius
+    var rh = ee
+      .Image(100)
+      .multiply(ee.Image(112).subtract(temp.subtract(dewpoint).multiply(5)))
+      .exp()
+      .divide(100)
+      .rename("Relative_Humidity");
+    return rh;
+  });
+
+// 5. Elevation (SRTM)
+var elevation = ee.Image("USGS/SRTMGL1_003").clip(aoi);
+
+// Combine all datasets into a single image (median composite)
+var combinedImage = hlsWithIndices
+  .median()
+  .addBands(soilMoisture.median())
+  .addBands(lst.median())
+  .addBands(relativeHumidity.median())
+  .addBands(elevation);
+
+// Load FAO desert locust report (shapefile already uploaded)
+var locustPresence = ee.FeatureCollection(faoReport);
+
+// Create a binary mask: 1 for locust presence, 0 for absence
+var locustPresenceImage = locustPresence
+  .map(function (feature) {
+    return feature.set("label", 1);
+  })
+  .reduceToImage({
+    properties: ["label"],
+    reducer: ee.Reducer.first(),
+  })
+  .unmask(0); // Unmask with 0 for locust absence
+
+// Add the locust label to the combined dataset
+var labeledData = combinedImage.addBands(locustPresenceImage.rename("label"));
+
+// Sample data with labels for training
+var trainingSamples = labeledData.sample({
+  region: aoi,
+  scale: 30, // Match Sentinel-2 resolution
+  numPixels: 5000, // Adjust this based on your region size
+  seed: 42,
+  geometries: true, // Keep geometries for analysis
+});
+
+// Export the data to Google Drive for external model training
+Export.table.toDrive({
+  collection: trainingSamples,
+  description: "locust_training_data",
+  fileFormat: "CSV",
+});
