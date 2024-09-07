@@ -150,9 +150,58 @@ var trainingSamples = labeledData.sample({
   geometries: true, // Keep geometries for analysis if needed
 });
 
+// Print the sampled data to the Console
+print("Training Samples:", trainingSamples);
+
+// Clip datasets to the AOI
+var ndviClipped = hlsWithIndices.select("NDVI").median().clip(aoi);
+var eviClipped = hlsWithIndices.select("EVI").median().clip(aoi);
+var lstClipped = lst.median().clip(aoi);
+var windspeed10mClipped = windspeed10m.median().clip(aoi);
+var locustPresenceClipped = locustPresence.filterBounds(aoi); // Clip the locust presence shapefile
+
+// Add layers to the map within the AOI
+Map.centerObject(aoi, 6); // Center the map on the AOI
+// Visualize NDVI median
+Map.addLayer(
+  ndviClipped,
+  { min: -1, max: 1, palette: ["blue", "white", "green"] },
+  "NDVI (AOI)",
+);
+// Visualize EVI median
+Map.addLayer(
+  eviClipped,
+  { min: -1, max: 1, palette: ["blue", "white", "green"] },
+  "EVI (AOI)",
+);
+// Visualize Land Surface Temperature (LST)
+Map.addLayer(
+  lstClipped,
+  { min: 20, max: 40, palette: ["blue", "green", "red"] },
+  "LST (AOI)",
+);
+// Visualize Windspeed at 10m
+Map.addLayer(
+  windspeed10mClipped,
+  { min: 0, max: 15, palette: ["blue", "yellow", "red"] },
+  "Windspeed at 10m (AOI)",
+);
+// Visualize Locust Presence areas
+Map.addLayer(
+  locustPresenceClipped,
+  { color: "white" },
+  "Locust Presence (AOI)",
+);
+
+// Limit to 5 rows of sampled data and print
+var sampleSubset = trainingSamples.limit(5);
+print("Sampled Data (first 5 rows):", sampleSubset);
+
 // Export the data to Google Drive for external model training
-Export.table.toDrive({
-  collection: trainingSamples,
-  description: "locust_training_data",
-  fileFormat: "CSV",
-});
+// Export.table.toDrive({
+//   collection: trainingSamples,
+//   description: "locust_training_data",
+//   fileFormat: "CSV",
+//   folder: 'EarthEngineExports',  // Optional: Specify a folder in Drive
+//   selectors: ['NDVI', 'EVI', 'ssm', 'LST_Day_1km', 'Relative_Humidity', 'Windspeed_10m', 'Windspeed_50m', 'uWindSpeed_10m', 'precipitation_monthly', 'elevation', 'label']  //Specify the attributes to export
+// });
