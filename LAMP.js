@@ -65,12 +65,63 @@ var relativeHumidity = ee
 // 5. Elevation (SRTM)
 var elevation = ee.Image("USGS/SRTMGL1_003").clip(aoi);
 
+// 6. Windspeed at 10m and 50m, and uWindSpeed (ERA5-Land)
+var windspeed10m = ee
+  .ImageCollection("ECMWF/ERA5_LAND/HOURLY")
+  .filterBounds(aoi)
+  .filterDate(startDate, endDate)
+  .select("u10");
+
+var windspeed50m = ee
+  .ImageCollection("ECMWF/ERA5_LAND/HOURLY")
+  .filterBounds(aoi)
+  .filterDate(startDate, endDate)
+  .select("u50");
+
+var uWindSpeed = ee
+  .ImageCollection("ECMWF/ERA5_LAND/HOURLY")
+  .filterBounds(aoi)
+  .filterDate(startDate, endDate)
+  .select("u_component_of_wind_10m");
+
+// 7. Precipitation (CHIRPS)
+var chirps = ee
+  .ImageCollection("UCSB-CHG/CHIRPS/DAILY")
+  .filterBounds(aoi)
+  .filterDate(startDate, endDate)
+  .select("precipitation");
+
+// Monthly precipitation sum from CHIRPS
+var chirpsMonthly = ee
+  .ImageCollection(
+    ee.List.sequence(
+      0,
+      ee.Date(endDate).difference(ee.Date(startDate), "month").subtract(1),
+    ).map(function (monthOffset) {
+      var start = ee.Date(startDate).advance(monthOffset, "month");
+      var end = start.advance(1, "month");
+
+      var monthlySum = chirps
+        .filterDate(start, end)
+        .reduce(ee.Reducer.sum())
+        .set("system:time_start", start.millis()); // Set time property to start of the month
+
+      return monthlySum;
+    }),
+  )
+  .median()
+  .rename("precipitation_monthly");
+
 // Combine all datasets into a single image (median composite)
 var combinedImage = hlsWithIndices
   .median()
   .addBands(soilMoisture.median())
   .addBands(lst.median())
   .addBands(relativeHumidity.median())
+  .addBands(windspeed10m.median().rename("Windspeed_10m"))
+  .addBands(windspeed50m.median().rename("Windspeed_50m"))
+  .addBands(uWindSpeed.median().rename("uWindSpeed_10m"))
+  .addBands(chirpsMonthly)
   .addBands(elevation);
 
 // Load FAO desert locust report (shapefile already uploaded)
@@ -96,7 +147,7 @@ var trainingSamples = labeledData.sample({
   scale: 30, // Match Sentinel-2 resolution
   numPixels: 5000, // Adjust this based on your region size
   seed: 42,
-  geometries: true, // Keep geometries for analysis
+  geometries: true, // Keep geometries for analysis if needed
 });
 
 // Export the data to Google Drive for external model training
