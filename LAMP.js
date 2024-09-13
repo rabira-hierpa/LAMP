@@ -32,7 +32,7 @@ var soilMoisture = ee
   .ImageCollection("NASA/SMAP/SPL4SMGP/007")
   .filterBounds(aoi)
   .filterDate(startDate, endDate)
-  .select("ssm");
+  .select("sm_surface");
 
 // 3. Land Surface Temperature (MODIS)
 var lst = ee
@@ -66,17 +66,11 @@ var relativeHumidity = ee
 var elevation = ee.Image("USGS/SRTMGL1_003").clip(aoi);
 
 // 6. Windspeed at 10m and 50m, and uWindSpeed (ERA5-Land)
-var windspeed10m = ee
+var vWindSpeed10m = ee
   .ImageCollection("ECMWF/ERA5_LAND/HOURLY")
   .filterBounds(aoi)
   .filterDate(startDate, endDate)
-  .select("u10");
-
-var windspeed50m = ee
-  .ImageCollection("ECMWF/ERA5_LAND/HOURLY")
-  .filterBounds(aoi)
-  .filterDate(startDate, endDate)
-  .select("u50");
+  .select("v_component_of_wind_10m");
 
 var uWindSpeed = ee
   .ImageCollection("ECMWF/ERA5_LAND/HOURLY")
@@ -118,9 +112,8 @@ var combinedImage = hlsWithIndices
   .addBands(soilMoisture.median())
   .addBands(lst.median())
   .addBands(relativeHumidity.median())
-  .addBands(windspeed10m.median().rename("Windspeed_10m"))
-  .addBands(windspeed50m.median().rename("Windspeed_50m"))
   .addBands(uWindSpeed.median().rename("uWindSpeed_10m"))
+  .addBands(vWindSpeed10m.median().rename("vWindSpeed_10m"))
   .addBands(chirpsMonthly)
   .addBands(elevation);
 
@@ -141,26 +134,29 @@ var locustPresenceImage = locustPresence
 // Add the locust label to the combined dataset
 var labeledData = combinedImage.addBands(locustPresenceImage.rename("label"));
 
+// Define a smaller AOI if possible
+var smallerAOI = aoi.bounds().centroid(1).buffer(15000); // Smaller area of interest
+
 // Sample data with labels for training
 var trainingSamples = labeledData.sample({
-  region: aoi,
+  region: smallerAOI,
   scale: 30, // Match Sentinel-2 resolution
-  numPixels: 5000, // Adjust this based on your region size
+  numPixels: 1000, // Adjust this based on your region size
   seed: 42,
   geometries: true, // Keep geometries for analysis if needed
 });
 
 // Print the sampled data to the Console
-print("Training Samples:", trainingSamples);
+// print('Training Samples:', trainingSamples);
 
 // Clip datasets to the AOI
 var ndviClipped = hlsWithIndices.select("NDVI").median().clip(aoi);
 var eviClipped = hlsWithIndices.select("EVI").median().clip(aoi);
 var lstClipped = lst.median().clip(aoi);
-var windspeed10mClipped = windspeed10m.median().clip(aoi);
+var windspeed10mClipped = uWindSpeed.median().clip(aoi);
 var locustPresenceClipped = locustPresence.filterBounds(aoi); // Clip the locust presence shapefile
 
-// Add layers to the map within the AOI
+// // Add layers to the map within the AOI
 Map.centerObject(aoi, 6); // Center the map on the AOI
 // Visualize NDVI median
 Map.addLayer(
@@ -194,14 +190,26 @@ Map.addLayer(
 );
 
 // Limit to 5 rows of sampled data and print
-var sampleSubset = trainingSamples.limit(5);
-print("Sampled Data (first 5 rows):", sampleSubset);
+// var sampleSubset = trainingSamples.limit(1);
+// print('Sampled Data (first 5 rows):', sampleSubset);
 
 // Export the data to Google Drive for external model training
-// Export.table.toDrive({
-//   collection: trainingSamples,
-//   description: "locust_training_data",
-//   fileFormat: "CSV",
-//   folder: 'EarthEngineExports',  // Optional: Specify a folder in Drive
-//   selectors: ['NDVI', 'EVI', 'ssm', 'LST_Day_1km', 'Relative_Humidity', 'Windspeed_10m', 'Windspeed_50m', 'uWindSpeed_10m', 'precipitation_monthly', 'elevation', 'label']  //Specify the attributes to export
-// });
+Export.table.toDrive({
+  collection: trainingSamples,
+  description: "locust_training_data",
+  fileFormat: "CSV",
+  folder: "Thesis/Data/GEE", // Optional: Specify a folder in Drive
+  selectors: [
+    "NDVI",
+    "EVI",
+    "SSM",
+    "LST_Day_1km",
+    "Relative_Humidity",
+    "Windspeed_10m",
+    "vWindSpeed_10m",
+    "uWindSpeed_10m",
+    "precipitation_monthly",
+    "elevation",
+    "label",
+  ], //Specify the attributes to export
+});
