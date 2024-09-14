@@ -135,14 +135,15 @@ var locustPresenceImage = locustPresence
 var labeledData = combinedImage.addBands(locustPresenceImage.rename("label"));
 
 // Define a smaller AOI if possible
-var smallerAOI = aoi.bounds().centroid(1).buffer(15000); // Smaller area of interest
+//var smallerAOI = aoi.bounds().centroid(1).buffer(15000);  // Smaller area of interest
 
+//print(faoReport)
 // Sample data with labels for training
 var trainingSamples = labeledData.sample({
-  region: smallerAOI,
-  scale: 30, // Match Sentinel-2 resolution
-  numPixels: 1000, // Adjust this based on your region size
-  seed: 42,
+  region: faoReport,
+  scale: 3000, // Match Sentinel-2 resolution
+  // numPixels: 1000, // Adjust this based on your region size
+  //seed: 42,
   geometries: true, // Keep geometries for analysis if needed
 });
 
@@ -159,57 +160,27 @@ var locustPresenceClipped = locustPresence.filterBounds(aoi); // Clip the locust
 // // Add layers to the map within the AOI
 Map.centerObject(aoi, 6); // Center the map on the AOI
 // Visualize NDVI median
-Map.addLayer(
-  ndviClipped,
-  { min: -1, max: 1, palette: ["blue", "white", "green"] },
-  "NDVI (AOI)",
-);
+//Map.addLayer(ndviClipped, {min: -1, max: 1, palette: ['blue', 'white', 'green']}, 'NDVI (AOI)');
 // Visualize EVI median
-Map.addLayer(
-  eviClipped,
-  { min: -1, max: 1, palette: ["blue", "white", "green"] },
-  "EVI (AOI)",
-);
+//Map.addLayer(eviClipped, {min: -1, max: 1, palette: ['blue', 'white', 'green']}, 'EVI (AOI)');
 // Visualize Land Surface Temperature (LST)
-Map.addLayer(
-  lstClipped,
-  { min: 20, max: 40, palette: ["blue", "green", "red"] },
-  "LST (AOI)",
-);
+//Map.addLayer(lstClipped, {min: 20, max: 40, palette: ['blue', 'green', 'red']}, 'LST (AOI)');
 // Visualize Windspeed at 10m
-Map.addLayer(
-  windspeed10mClipped,
-  { min: 0, max: 15, palette: ["blue", "yellow", "red"] },
-  "Windspeed at 10m (AOI)",
-);
+//Map.addLayer(windspeed10mClipped, {min: 0, max: 15, palette: ['blue', 'yellow', 'red']}, 'Windspeed at 10m (AOI)');
 // Visualize Locust Presence areas
-Map.addLayer(
-  locustPresenceClipped,
-  { color: "white" },
-  "Locust Presence (AOI)",
-);
+//Map.addLayer(locustPresenceClipped, {color: 'white'}, 'Locust Presence (AOI)');
 
 // Limit to 5 rows of sampled data and print
 // var sampleSubset = trainingSamples.limit(1);
 // print('Sampled Data (first 5 rows):', sampleSubset);
 
 // Export the data to Google Drive for external model training
-Export.table.toDrive({
+/*Export.table.toDrive({
   collection: trainingSamples,
   description: "locust_training_data",
   fileFormat: "CSV",
-  folder: "Thesis/Data/GEE", // Optional: Specify a folder in Drive
-  selectors: [
-    "NDVI",
-    "EVI",
-    "SSM",
-    "LST_Day_1km",
-    "Relative_Humidity",
-    "Windspeed_10m",
-    "vWindSpeed_10m",
-    "uWindSpeed_10m",
-    "precipitation_monthly",
-    "elevation",
-    "label",
-  ], //Specify the attributes to export
-});
+  scale: 3000,
+  folder: 'Thesis/Data/GEE',  // Optional: Specify a folder in Drive
+  selectors: ['NDVI', 'EVI', 'SSM', 'LST_Day_1km', 'Relative_Humidity', 'Windspeed_10m', 'vWindSpeed_10m', 'uWindSpeed_10m', 'precipitation_monthly', 'elevation', 'label']  //Specify the attributes to export
+});*/
+Export.table.toDrive(trainingSamples, "Locust_training");
