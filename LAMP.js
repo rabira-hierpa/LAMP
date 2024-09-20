@@ -12,7 +12,7 @@ var hlsL30Collection = ee
 
 // Function to calculate NDVI and EVI
 var addNDVI = function (image) {
-  var ndvi = image.normalizedDifference(["B5", "B4"]).rename("NDVI"); // Red, NIR
+  var ndvi = image.normalizedDifference(["B5", "B4"]).rename("NDVI");
   return image.addBands(ndvi);
 };
 var addEVI = function (image) {
@@ -37,7 +37,7 @@ var soilMoisture = ee
   .select("sm_surface")
   .map(function (image) {
     return image.clip(aoi);
-  }); // Clip to AOI early
+  });
 
 // 3. Land Surface Temperature (MODIS) - Clipped early to reduce memory
 var lst = ee
@@ -71,8 +71,14 @@ var relativeHumidity = ee
     return rh;
   });
 
-// 5. Elevation (SRTM) - No changes
-var elevation = ee.Image("USGS/SRTMGL1_003").clip(aoi);
+// 5. Elevation (SRTM) - Reduced resolution to save memory
+var elevation = ee
+  .Image("USGS/SRTMGL1_003")
+  .reduceResolution({
+    reducer: ee.Reducer.mean(),
+    bestEffort: true,
+  })
+  .clip(aoi); // Reduced resolution to save memory
 
 // 6. Windspeed at 10m and 50m (ERA5-Land) - Clipped early to reduce memory
 var vWindSpeed10m = ee
@@ -82,7 +88,7 @@ var vWindSpeed10m = ee
   .select("v_component_of_wind_10m")
   .map(function (image) {
     return image.clip(aoi);
-  }); // Clip to AOI early
+  });
 
 var uWindSpeed = ee
   .ImageCollection("ECMWF/ERA5_LAND/HOURLY")
@@ -91,7 +97,7 @@ var uWindSpeed = ee
   .select("u_component_of_wind_10m")
   .map(function (image) {
     return image.clip(aoi);
-  }); // Clip to AOI early
+  });
 
 // 7. Precipitation (CHIRPS) - Simplify the temporal composite and clip
 var chirps = ee
@@ -135,54 +141,25 @@ var locustPresenceImage = locustPresence
 // Add the locust label to the combined dataset
 var labeledData = combinedImage.addBands(locustPresenceImage.rename("label"));
 
-// Reduce the number of samples to avoid memory issues
-var trainingSamples = labeledData.sample({
-  region: aoi,
-  scale: 300,
-  numPixels: 1000, // Reduced to avoid memory issues
-  seed: 42,
-  geometries: true,
+// Divide the area into tiles (batch sampling)
+var grid = aoi.coveringGrid(30000); // Create grid with 30km cells
+var samples = grid.map(function (tile) {
+  return labeledData.sample({
+    region: tile.geometry(),
+    scale: 300,
+    numPixels: 500, // Fewer pixels per tile
+    seed: 42,
+    geometries: true,
+  });
 });
 
-// Clip datasets to the AOI
-var ndviClipped = hlsWithIndices.select("NDVI").clip(aoi);
-var eviClipped = hlsWithIndices.select("EVI").clip(aoi);
-var lstClipped = lst.median().clip(aoi);
-var windspeed10mClipped = uWindSpeed.median().clip(aoi);
-var locustPresenceClipped = locustPresence.filterBounds(aoi);
+// Flatten the sample collection
+var trainingSamples = samples.flatten();
 
-// Add layers to the map within the AOI
-Map.centerObject(aoi, 6);
-Map.addLayer(
-  ndviClipped,
-  { min: -1, max: 1, palette: ["blue", "white", "green"] },
-  "NDVI (AOI)",
-);
-Map.addLayer(
-  eviClipped,
-  { min: -1, max: 1, palette: ["blue", "white", "green"] },
-  "EVI (AOI)",
-);
-Map.addLayer(
-  lstClipped,
-  { min: 20, max: 40, palette: ["blue", "green", "red"] },
-  "LST (AOI)",
-);
-Map.addLayer(
-  windspeed10mClipped,
-  { min: 0, max: 15, palette: ["blue", "yellow", "red"] },
-  "Windspeed at 10m (AOI)",
-);
-Map.addLayer(
-  locustPresenceClipped,
-  { color: "white" },
-  "Locust Presence (AOI)",
-);
-
-// Export the data to Google Drive for external model training
+// Export training samples in chunks (if needed, you can adjust the number of samples per export)
 Export.table.toDrive({
   collection: trainingSamples,
-  description: "locust_training_data_300m_oromia",
+  description: "locust_training_data_300m_oromia_chunk",
   fileFormat: "CSV",
   folder: "Thesis",
   selectors: [
