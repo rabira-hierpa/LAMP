@@ -26,25 +26,28 @@ var addEVI = function (image) {
   return image.addBands(evi);
 };
 
-// Reduced temporal resolution by averaging the collection
-var hlsWithIndices = hlsL30Collection.map(addNDVI).map(addEVI).mean(); // Use mean to reduce memory
+// Compute NDVI and EVI, then select only the NDVI and EVI bands
+var hlsWithIndices = hlsL30Collection
+  .map(addNDVI)
+  .map(addEVI)
+  .select(["NDVI", "EVI"]); // Select only NDVI and EVI bands
 
-// 2. Soil Moisture (SMAP) - Clipped early to reduce memory
+// 2. Soil Moisture (SMAP) - Select only the needed band
 var soilMoisture = ee
   .ImageCollection("NASA/SMAP/SPL4SMGP/007")
   .filterBounds(aoi)
   .filterDate(startDate, endDate)
-  .select("sm_surface")
+  .select("sm_surface") // Select the soil moisture band
   .map(function (image) {
     return image.clip(aoi);
   });
 
-// 3. Land Surface Temperature (MODIS) - Clipped early to reduce memory
+// 3. Land Surface Temperature (MODIS) - Select only LST band
 var lst = ee
   .ImageCollection("MODIS/061/MOD11A2")
   .filterBounds(aoi)
   .filterDate(startDate, endDate)
-  .select("LST_Day_1km")
+  .select("LST_Day_1km") // Select only the LST Day band
   .map(function (image) {
     return image
       .multiply(0.02)
@@ -53,15 +56,15 @@ var lst = ee
       .clip(aoi);
   });
 
-// 4. Relative Humidity (ERA5-Land) - No changes
+// 4. Relative Humidity (ERA5-Land) - Select only necessary bands
 var relativeHumidity = ee
   .ImageCollection("ECMWF/ERA5_LAND/HOURLY")
   .filterBounds(aoi)
   .filterDate(startDate, endDate)
   .select(["dewpoint_temperature_2m", "temperature_2m"])
   .map(function (image) {
-    var temp = image.select("temperature_2m").subtract(273.15); // to Celsius
-    var dewpoint = image.select("dewpoint_temperature_2m").subtract(273.15); // to Celsius
+    var temp = image.select("temperature_2m").subtract(273.15); // Convert to Celsius
+    var dewpoint = image.select("dewpoint_temperature_2m").subtract(273.15); // Convert to Celsius
     var rh = ee
       .Image(100)
       .multiply(ee.Image(112).subtract(temp.subtract(dewpoint).multiply(5)))
@@ -71,16 +74,17 @@ var relativeHumidity = ee
     return rh;
   });
 
-// 5. Elevation (SRTM) - Reduced resolution to save memory
+// 5. Elevation (SRTM) - Select only the elevation band
 var elevation = ee
   .Image("USGS/SRTMGL1_003")
+  .select("elevation") // Select only the elevation band
   .reduceResolution({
     reducer: ee.Reducer.mean(),
     bestEffort: true,
   })
-  .clip(aoi); // Reduced resolution to save memory
+  .clip(aoi); // Clip to AOI
 
-// 6. Windspeed at 10m and 50m (ERA5-Land) - Clipped early to reduce memory
+// 6. Windspeed at 10m and 50m (ERA5-Land) - Select only the needed bands
 var vWindSpeed10m = ee
   .ImageCollection("ECMWF/ERA5_LAND/HOURLY")
   .filterBounds(aoi)
@@ -99,22 +103,22 @@ var uWindSpeed = ee
     return image.clip(aoi);
   });
 
-// 7. Precipitation (CHIRPS) - Simplify the temporal composite and clip
+// 7. Precipitation (CHIRPS) - Select only the precipitation band
 var chirps = ee
   .ImageCollection("UCSB-CHG/CHIRPS/DAILY")
   .filterBounds(aoi)
   .filterDate(startDate, endDate)
-  .select("precipitation")
+  .select("precipitation") // Select only the precipitation band
   .map(function (image) {
     return image.clip(aoi);
-  }); // Clip to AOI early
+  });
 
 // Monthly precipitation sum from CHIRPS - Adjusted for memory
 var chirpsMonthly = chirps
   .reduce(ee.Reducer.sum()) // Simplified precipitation sum
   .rename("precipitation_monthly");
 
-// Combine all datasets into a single image
+// Combine all datasets into a single image (only selected bands)
 var combinedImage = hlsWithIndices
   .addBands(soilMoisture.median())
   .addBands(lst.median())
@@ -146,17 +150,17 @@ var grid = aoi.coveringGrid(30000); // Create grid with 30km cells
 var samples = grid.map(function (tile) {
   return labeledData.sample({
     region: tile.geometry(),
-    scale: 300,
-    numPixels: 500, // Fewer pixels per tile
+    scale: 300, // Match Sentinel-2 resolution
+    numPixels: 500, // Fewer pixels per tile to reduce memory
     seed: 42,
     geometries: true,
   });
 });
 
-// Flatten the sample collection
+// Flatten the sample collection from all tiles
 var trainingSamples = samples.flatten();
 
-// Export training samples in chunks (if needed, you can adjust the number of samples per export)
+// Export the data to Google Drive for external model training (in batches)
 Export.table.toDrive({
   collection: trainingSamples,
   description: "locust_training_data_300m_oromia_chunk",
