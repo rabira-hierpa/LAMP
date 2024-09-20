@@ -30,7 +30,8 @@ var addEVI = function (image) {
 var hlsWithIndices = hlsL30Collection
   .map(addNDVI)
   .map(addEVI)
-  .select(["NDVI", "EVI"]); // Select only NDVI and EVI bands
+  .select(["NDVI", "EVI"])
+  .median(); // Use median for composite
 
 // 2. Soil Moisture (SMAP) - Select only the needed band
 var soilMoisture = ee
@@ -38,9 +39,8 @@ var soilMoisture = ee
   .filterBounds(aoi)
   .filterDate(startDate, endDate)
   .select("sm_surface") // Select the soil moisture band
-  .map(function (image) {
-    return image.clip(aoi);
-  });
+  .median() // Use median composite
+  .clip(aoi);
 
 // 3. Land Surface Temperature (MODIS) - Select only LST band
 var lst = ee
@@ -49,12 +49,10 @@ var lst = ee
   .filterDate(startDate, endDate)
   .select("LST_Day_1km") // Select only the LST Day band
   .map(function (image) {
-    return image
-      .multiply(0.02)
-      .subtract(273.15)
-      .rename("LST_Day_1km")
-      .clip(aoi);
-  });
+    return image.multiply(0.02).subtract(273.15).rename("LST_Day_1km");
+  })
+  .median() // Use median composite
+  .clip(aoi);
 
 // 4. Relative Humidity (ERA5-Land) - Select only necessary bands
 var relativeHumidity = ee
@@ -72,7 +70,9 @@ var relativeHumidity = ee
       .divide(100)
       .rename("Relative_Humidity");
     return rh;
-  });
+  })
+  .median() // Use median composite
+  .clip(aoi);
 
 // 5. Elevation (SRTM) - Select only the elevation band
 var elevation = ee
@@ -90,18 +90,16 @@ var vWindSpeed10m = ee
   .filterBounds(aoi)
   .filterDate(startDate, endDate)
   .select("v_component_of_wind_10m")
-  .map(function (image) {
-    return image.clip(aoi);
-  });
+  .median() // Use median composite
+  .clip(aoi);
 
 var uWindSpeed = ee
   .ImageCollection("ECMWF/ERA5_LAND/HOURLY")
   .filterBounds(aoi)
   .filterDate(startDate, endDate)
   .select("u_component_of_wind_10m")
-  .map(function (image) {
-    return image.clip(aoi);
-  });
+  .median() // Use median composite
+  .clip(aoi);
 
 // 7. Precipitation (CHIRPS) - Select only the precipitation band
 var chirps = ee
@@ -109,23 +107,17 @@ var chirps = ee
   .filterBounds(aoi)
   .filterDate(startDate, endDate)
   .select("precipitation") // Select only the precipitation band
-  .map(function (image) {
-    return image.clip(aoi);
-  });
-
-// Monthly precipitation sum from CHIRPS - Adjusted for memory
-var chirpsMonthly = chirps
-  .reduce(ee.Reducer.sum()) // Simplified precipitation sum
-  .rename("precipitation_monthly");
+  .reduce(ee.Reducer.sum()) // Monthly sum
+  .clip(aoi);
 
 // Combine all datasets into a single image (only selected bands)
 var combinedImage = hlsWithIndices
-  .addBands(soilMoisture.median())
-  .addBands(lst.median())
-  .addBands(relativeHumidity.median())
-  .addBands(uWindSpeed.median().rename("uWindSpeed_10m"))
-  .addBands(vWindSpeed10m.median().rename("vWindSpeed_10m"))
-  .addBands(chirpsMonthly)
+  .addBands(soilMoisture)
+  .addBands(lst)
+  .addBands(relativeHumidity)
+  .addBands(uWindSpeed.rename("uWindSpeed_10m"))
+  .addBands(vWindSpeed10m.rename("vWindSpeed_10m"))
+  .addBands(chirps.rename("precipitation_monthly"))
   .addBands(elevation);
 
 // Load FAO desert locust report (shapefile already uploaded)
@@ -146,7 +138,16 @@ var locustPresenceImage = locustPresence
 var labeledData = combinedImage.addBands(locustPresenceImage.rename("label"));
 
 // Divide the area into tiles (batch sampling)
-var grid = aoi.coveringGrid(30000); // Create grid with 30km cells
+// Define a 30km grid size
+var gridSize = 30000; // Grid size in meters (30 km)
+var grid = ee
+  .FeatureCollection(aoi)
+  .geometry()
+  .buffer(gridSize / 2)
+  .bounds()
+  .coveringGrid("EPSG:4326", gridSize); // Generate 30km grid cells
+
+// Sample data in each grid cell
 var samples = grid.map(function (tile) {
   return labeledData.sample({
     region: tile.geometry(),
