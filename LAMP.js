@@ -1,6 +1,6 @@
 // Define area of interest and time range
 var aoi = oromiaBoundary.geometry();
-var startDate = "2019-06-25";
+var startDate = "2021-01-01";
 var endDate = "2021-11-27";
 
 // 1. Load HLS dataset for NDVI and EVI (Sentinel-2 and Landsat)
@@ -137,6 +137,12 @@ var locustPresenceImage = locustPresence
 // Add the locust label to the combined dataset
 var labeledData = combinedImage.addBands(locustPresenceImage.rename("label"));
 
+// Add Latitude and Longitude bands to labeledData
+var latLon = ee.Image.pixelLonLat().clip(aoi);
+var labeledDataWithLocation = labeledData
+  .addBands(latLon.select("longitude"))
+  .addBands(latLon.select("latitude"));
+
 // Divide the area into tiles (batch sampling)
 // Define a 30km grid size
 var gridSize = 30000; // Grid size in meters (30 km)
@@ -149,7 +155,7 @@ var grid = ee
 
 // Sample data in each grid cell
 var samples = grid.map(function (tile) {
-  return labeledData.sample({
+  return labeledDataWithLocation.sample({
     region: tile.geometry(),
     scale: 300, // Match Sentinel-2 resolution
     numPixels: 500, // Fewer pixels per tile to reduce memory
@@ -177,6 +183,8 @@ Export.table.toDrive({
     "vWindSpeed_10m",
     "precipitation_monthly",
     "elevation",
+    "longitude", // Include longitude
+    "latitude", // Include latitude
     "label",
   ],
 });
