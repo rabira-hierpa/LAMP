@@ -1,6 +1,6 @@
 # Exported Dataset
 
-This dataset was exported by running LAMP.js on Google Earth Engine. The dataset contains the following features:
+This dataset was exported by running `GEE/Locust_dataset_preparation.js` on Google Earth Engine. The dataset contains the following features:
 
 - NDVI
 - EVI
