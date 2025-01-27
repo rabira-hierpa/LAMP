@@ -1,9 +1,9 @@
 import ee
 import time
-from datetime import datetime
 import logging
-from typing import List, Dict
+from datetime import datetime
 import math
+from typing import Dict
 
 # Initialize logging
 logging.basicConfig(
@@ -29,146 +29,188 @@ def get_ethiopia_boundary():
     return et_boundary.geometry()
 
 
-def get_environment_data(report: ee.Feature, aoi: ee.Geometry) -> ee.Image:
-    """Get environmental data for a specific report timestamp"""
-    report_date = ee.Date(report.get('FINISHDATE'))
-    start = report_date.advance(-7, 'day')
-    end = report_date.advance(7, 'day')
+def calculate_vhi(image):
+    """Calculate Vegetation Health Index"""
+    ndvi30 = image.select('NDVI_30')
+    ndvi60 = image.select('NDVI_60')
+    ndvi90 = image.select('NDVI_90')
 
-    # Process HLS (Harmonized Landsat Sentinel) data
-    hls_image = ee.ImageCollection("NASA/HLS/HLSL30/v002") \
-        .filterBounds(aoi) \
-        .filterDate(start, end)
+    tci30 = image.select('TCI_30')
+    tci60 = image.select('TCI_60')
+    tci90 = image.select('TCI_90')
 
-    def process_hls(image):
-        ndvi = image.normalizedDifference(["B5", "B4"]).rename("NDVI")
-        evi = image.expression(
-            "2.5 * ((NIR - RED) / (NIR + 6 * RED - 7.5 * BLUE + 1))",
-            {
-                'NIR': image.select("B5"),
-                'RED': image.select("B4"),
-                'BLUE': image.select("B2")
-            }
-        ).rename("EVI")
-        return image.addBands(ndvi).addBands(evi)
+    vhi30 = ndvi30.multiply(0.5).add(tci30.multiply(0.5)).rename('VHI_30')
+    vhi60 = ndvi60.multiply(0.5).add(tci60.multiply(0.5)).rename('VHI_60')
+    vhi90 = ndvi90.multiply(0.5).add(tci90.multiply(0.5)).rename('VHI_90')
 
-    hls_image = hls_image.map(process_hls)
-    hls_final = ee.Image(ee.Algorithms.If(
-        hls_image.size().gt(0),
-        hls_image.select(["NDVI", "EVI"]).median(),
-        hls_image.first()
-    )).clip(aoi)
+    return image.addBands([vhi30, vhi60, vhi90])
 
-    # Get other environmental data
-    soil_moisture = ee.ImageCollection("NASA/SMAP/SPL4SMGP/007") \
-        .filterBounds(aoi).filterDate(start, end) \
-        .select("sm_surface").median().clip(aoi)
 
-    lst = ee.ImageCollection("MODIS/061/MOD11A2") \
-        .filterBounds(aoi).filterDate(start, end) \
-        .select("LST_Day_1km") \
-        .map(lambda img: img.multiply(0.02).subtract(273.15)) \
-        .median().clip(aoi)
+def calculate_tci(image):
+    """Calculate Temperature Condition Index"""
+    lst30 = image.select('LST_30')
+    lst60 = image.select('LST_60')
+    lst90 = image.select('LST_90')
 
-    # Process ERA5-Land data for humidity and wind
-    era5_hourly = ee.ImageCollection("ECMWF/ERA5_LAND/HOURLY") \
-        .filterBounds(aoi).filterDate(start, end)
+    tci30 = lst30.subtract(273.15).multiply(0.1).rename('TCI_30')
+    tci60 = lst60.subtract(273.15).multiply(0.1).rename('TCI_60')
+    tci90 = lst90.subtract(273.15).multiply(0.1).rename('TCI_90')
 
-    humidity = era5_hourly.select(["dewpoint_temperature_2m", "temperature_2m"]) \
-        .map(lambda img: ee.Image(100).multiply(
-            ee.Image(112).subtract(
-                img.select("temperature_2m").subtract(273.15)
-                .subtract(img.select("dewpoint_temperature_2m").subtract(273.15))
-                .multiply(5)
-            )
-        ).exp().divide(100)).median().clip(aoi)
+    return image.addBands([tci30, tci60, tci90])
 
-    wind_u = era5_hourly.select("u_component_of_wind_10m").median().clip(aoi)
-    wind_v = era5_hourly.select("v_component_of_wind_10m").median().clip(aoi)
 
-    # Get precipitation data
-    precipitation = ee.ImageCollection("UCSB-CHG/CHIRPS/DAILY") \
-        .filterBounds(aoi).filterDate(start, end) \
-        .select("precipitation").sum().clip(aoi)
+def extract_time_lagged_data(point):
+    """Extract time-lagged environmental variables for a point"""
+    date = ee.Date(point.get('FINISHDATE'))
+    point_geometry = point.geometry()
 
-    # Get elevation data
-    elevation = ee.Image("USGS/SRTMGL1_003").select("elevation").clip(aoi)
+    # Define time lags
+    lag30 = date.advance(-30, 'days')
+    lag60 = date.advance(-60, 'days')
+    lag90 = date.advance(-90, 'days')
+
+    # Extract all variables with time lags
+    collections = {
+        'NDVI': {
+            'collection': 'MODIS/061/MOD13A2',
+            'bands': ['NDVI', 'EVI'],
+            'reducer': 'mean'
+        },
+        'LST': {
+            'collection': 'MODIS/061/MOD11A2',
+            'bands': ['LST_Day_1km'],
+            'reducer': 'mean'
+        },
+        'CHIRPS': {
+            'collection': 'UCSB-CHG/CHIRPS/DAILY',
+            'bands': ['precipitation'],
+            'reducer': 'sum'
+        },
+        'ERA5': {
+            'collection': 'ECMWF/ERA5/DAILY',
+            'bands': ['u_component_of_wind_10m', 'v_component_of_wind_10m'],
+            'reducer': 'mean'
+        },
+        'SMAP': {
+            'collection': 'NASA/SMAP/SPL4SMGP/007',
+            'bands': ['sm_surface'],
+            'reducer': 'mean'
+        }
+    }
+
+    all_bands = []
+
+    for var_name, config in collections.items():
+        for lag, lag_days in [('30', lag30), ('60', lag60), ('90', lag90)]:
+            collection = ee.ImageCollection(config['collection']) \
+                .filterBounds(point_geometry) \
+                .filterDate(lag_days, date)
+
+            for band in config['bands']:
+                img = collection.select(band)
+                if config['reducer'] == 'mean':
+                    img = img.mean()
+                else:
+                    img = img.sum()
+
+                new_name = f"{band}_{lag}"
+                all_bands.append(img.rename(new_name))
 
     # Combine all bands
-    return ee.Image.cat([
-        hls_final,
-        soil_moisture,
-        lst,
-        humidity,
-        wind_u,
-        wind_v,
-        precipitation,
-        elevation
-    ])
+    combined_image = ee.Image.cat(all_bands)
+
+    # Calculate indices
+    return calculate_vhi(calculate_tci(combined_image))
 
 
-def create_export_task(report: ee.Feature, index: int, aoi: ee.Geometry) -> ee.batch.Task:
-    """Create an export task for a single report"""
-    report_image = get_environment_data(report, aoi).toFloat()
-    finish_time = ee.Date(report.get("FINISHDATE")
-                          ).format("YYYY-MM-dd").getInfo()
+def aggregate_over_buffer(image, point, buffer_radius):
+    """Aggregate environmental data over a buffer zone"""
+    point_geometry = point.geometry().buffer(buffer_radius)
+    return image.reduceRegion({
+        'reducer': ee.Reducer.mean(),
+        'geometry': point_geometry,
+        'scale': 1000,
+        'maxPixels': 1e13
+    })
 
-    task = ee.batch.Export.image.toDrive(
-        image=report_image,
-        description=f'locust_data_{index}_{finish_time}',
-        scale=1000,  # 1km resolution
-        region=aoi,
-        maxPixels=1e13,
-        crs="EPSG:4326",
-        folder='Thesis'
-    )
+
+def create_export_task(feature_index: int, feature: ee.Feature, aoi: ee.Geometry) -> ee.batch.Task:
+    """Create an export task for a single feature"""
+    finish_date = ee.Date(feature.get('FINISHDATE')
+                          ).format('YYYY-MM-dd').getInfo()
+
+    # Extract time-lagged data
+    time_lagged_data = extract_time_lagged_data(feature).toFloat()
+
+    # Create multi-band image
+    multi_band_image = ee.Image.cat([
+        time_lagged_data,
+        ee.Image.constant(feature.get('LOCPRESENT')).toFloat().rename('label')
+    ]).clip(aoi)
+
+    # Create export task
+    task = ee.batch.Export.image.toDrive({
+        'image': multi_band_image,
+        'description': f'locust_feature_{feature_index}_{finish_date}',
+        'scale': 1000,
+        'region': aoi,
+        'maxPixels': 1e13,
+        'crs': 'EPSG:4326',
+        'folder': 'Thesis'
+    })
+
     return task
 
 
-def monitor_and_export(locust_points: ee.FeatureCollection, batch_size: int = 250):
+def monitor_and_export(fao_report_asset_id: str, batch_size: int = 250):
     """Monitor and manage export tasks with queue limitation"""
     aoi = get_ethiopia_boundary()
-    total_reports = locust_points.size().getInfo()
-    num_batches = math.ceil(total_reports / batch_size)
+
+    # Load FAO desert locust report
+    locust_points = ee.FeatureCollection(fao_report_asset_id)
+
+    # Get total number of features
+    total_features = locust_points.size().getInfo()
+    num_batches = math.ceil(total_features / batch_size)
+
+    logging.info(
+        f"Starting export of {total_features} features in {num_batches} batches")
+
     active_tasks: Dict[str, ee.batch.Task] = {}
     completed_count = 0
 
-    logging.info(
-        f"Starting export of {total_reports} reports in {num_batches} batches")
-
     for batch_idx in range(num_batches):
         start_idx = batch_idx * batch_size
-        batch_reports = locust_points.toList(batch_size, start_idx)
+        batch_features = locust_points.toList(batch_size, start_idx)
 
-        # Get report list for this batch
-        reports = batch_reports.getInfo()
+        # Get feature list for this batch
+        features = batch_features.getInfo()
 
-        for idx, report in enumerate(reports):
+        for idx, feature in enumerate(features):
             global_idx = start_idx + idx
 
             # Wait if we have too many active tasks
-            while len(active_tasks) >= 250:  # Keep buffer of 50 for safety
-                time.sleep(60)  # Check every minute
+            while len(active_tasks) >= 250:
+                time.sleep(60)
                 active_tasks = {task_id: task for task_id, task in active_tasks.items()
                                 if task.status()['state'] in ('READY', 'RUNNING')}
 
             # Create and start new task
-            report_feature = ee.Feature(report)
-            task = create_export_task(report_feature, global_idx, aoi)
+            feature_ee = ee.Feature(feature)
+            task = create_export_task(global_idx, feature_ee, aoi)
             task.start()
 
             task_id = task.status()['id']
             active_tasks[task_id] = task
 
-            logging.info(f"Started export {global_idx + 1}/{total_reports}")
+            logging.info(f"Started export {global_idx + 1}/{total_features}")
 
-            # Update completion count
             completed_count += 1
             if completed_count % 100 == 0:
                 logging.info(
-                    f"Progress: {completed_count}/{total_reports} exports initiated")
+                    f"Progress: {completed_count}/{total_features} exports initiated")
 
-            time.sleep(2)  # Small delay between task creation
+            time.sleep(2)
 
     # Wait for remaining tasks to complete
     while active_tasks:
@@ -186,11 +228,10 @@ def main():
     try:
         initialize_ee()
 
-        # Load FAO locust reports (you'll need to define how to load this)
-        locust_points = ee.FeatureCollection(
-            'projects/desert-locust-forcast/assets/FAO_Swarm_Report_RAW_2019_2021')
+        # Replace with your FAO report asset ID
+        fao_report_asset_id = 'projects/desert-locust-forcast/assets/FAO_Swarm_Report_RAW_2019_2021'
 
-        monitor_and_export(locust_points)
+        monitor_and_export(fao_report_asset_id)
 
     except Exception as e:
         logging.error(f"Export process failed: {str(e)}")
