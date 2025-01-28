@@ -1,3 +1,4 @@
+import streamlit as st
 import ee
 import time
 import logging
@@ -5,13 +6,18 @@ from datetime import datetime
 import math
 from typing import Dict
 
-# Initialize logging
+# -----------------------------
+# 1) Set up logging
+# -----------------------------
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
 
+# -----------------------------
+# 2) Define the GEEExporter class
+# -----------------------------
 class GEEExporter:
     def __init__(self):
         self.common_scale = 1000  # 1 km resolution
@@ -72,7 +78,7 @@ class GEEExporter:
             "90": date.advance(-90, "days")
         }
 
-        # Function to compute mean/sum for a given lag
+        # Helper function to compute mean/sum for a given lag
         def compute_variable(collection_id: str, bands: list, reducer: str, lag: str):
             reducer_fn = ee.Reducer.mean() if reducer == "mean" else ee.Reducer.sum()
             return (
@@ -84,31 +90,39 @@ class GEEExporter:
                 .rename(f"{bands[0]}_{lag}")
             )
 
-        # Compute variables using the helper function
+        # MODIS NDVI
         modis_ndvi30 = compute_variable(
             "MODIS/061/MOD13A2", ["NDVI"], "mean", "30")
         modis_ndvi60 = compute_variable(
             "MODIS/061/MOD13A2", ["NDVI"], "mean", "60")
         modis_ndvi90 = compute_variable(
             "MODIS/061/MOD13A2", ["NDVI"], "mean", "90")
+
+        # MODIS EVI
         modis_evi30 = compute_variable(
             "MODIS/061/MOD13A2", ["EVI"], "mean", "30")
         modis_evi60 = compute_variable(
             "MODIS/061/MOD13A2", ["EVI"], "mean", "60")
         modis_evi90 = compute_variable(
             "MODIS/061/MOD13A2", ["EVI"], "mean", "90")
+
+        # MODIS LST
         modis_lst30 = compute_variable(
             "MODIS/061/MOD11A2", ["LST_Day_1km"], "mean", "30")
         modis_lst60 = compute_variable(
             "MODIS/061/MOD11A2", ["LST_Day_1km"], "mean", "60")
         modis_lst90 = compute_variable(
             "MODIS/061/MOD11A2", ["LST_Day_1km"], "mean", "90")
+
+        # CHIRPS precipitation
         chirps30 = compute_variable(
             "UCSB-CHG/CHIRPS/DAILY", ["precipitation"], "sum", "30")
         chirps60 = compute_variable(
             "UCSB-CHG/CHIRPS/DAILY", ["precipitation"], "sum", "60")
         chirps90 = compute_variable(
             "UCSB-CHG/CHIRPS/DAILY", ["precipitation"], "sum", "90")
+
+        # ERA5 wind components
         era5_u30 = compute_variable(
             "ECMWF/ERA5/DAILY", ["u_component_of_wind_10m"], "mean", "30")
         era5_u60 = compute_variable(
@@ -121,6 +135,8 @@ class GEEExporter:
             "ECMWF/ERA5/DAILY", ["v_component_of_wind_10m"], "mean", "60")
         era5_v90 = compute_variable(
             "ECMWF/ERA5/DAILY", ["v_component_of_wind_10m"], "mean", "90")
+
+        # SMAP soil moisture
         smap30 = compute_variable(
             "NASA/SMAP/SPL4SMGP/007", ["sm_surface"], "mean", "30")
         smap60 = compute_variable(
@@ -128,33 +144,32 @@ class GEEExporter:
         smap90 = compute_variable(
             "NASA/SMAP/SPL4SMGP/007", ["sm_surface"], "mean", "90")
 
-        # ... (similar for other variables)
+        # Combine all bands
+        combined_image = ee.Image.cat([
+            modis_ndvi30, modis_ndvi60, modis_ndvi90,
+            modis_evi30, modis_evi60, modis_evi90,
+            modis_lst30, modis_lst60, modis_lst90,
+            chirps30, chirps60, chirps90,
+            era5_u30, era5_u60, era5_u90,
+            era5_v30, era5_v60, era5_v90,
+            smap30, smap60, smap90
+        ])
 
-        # Combine all bands into a single image
-        combined_image = ee.Image.cat([modis_ndvi30, modis_ndvi60, modis_ndvi90, modis_evi30, modis_evi60, modis_evi90, modis_lst30, modis_lst60,
-                                      modis_lst90, chirps30, chirps60, chirps90, era5_u30, era5_u60, era5_u90, era5_v30, era5_v60, era5_v90, smap30, smap60, smap90])
+        # Calculate indices
         return self.calculate_vhi(self.calculate_tci(combined_image))
 
     def generate_pseudo_absence_points(self, locust_points: ee.FeatureCollection, aoi: ee.Geometry) -> ee.FeatureCollection:
-        """Generate pseudo-absence points avoiding actual swarm locations"""
-        # Ensure the AOI is a valid Earth Engine Geometry object
-        if not isinstance(aoi, ee.Geometry):
-            aoi = ee.Geometry(aoi)
+        """Generate pseudo-absence points avoiding actual swarm locations."""
         # Generate random points
         non_swarm_points = ee.FeatureCollection.randomPoints(
             region=aoi,
-            points=3300,
+            points=3300,  # Adjust number as needed
             seed=42
         )
 
-        num_absence = non_swarm_points.size().getInfo()
-        logging.info(f"Generated {num_absence} pseudo-absence points")
-
         # Create 10km buffers around swarm points
-        swarm_buffers = locust_points.map(lambda feature:
-                                          feature.buffer(10000)  # 10 km buffer
-                                          )
-
+        swarm_buffers = locust_points.map(
+            lambda feature: feature.buffer(10000))
         buffer_union = swarm_buffers.union()
 
         # Filter out points that fall within swarm buffers and add presence property
@@ -162,8 +177,7 @@ class GEEExporter:
             .filter(ee.Filter.bounds(buffer_union).Not()) \
             .map(lambda feature:
                  feature.set({
-                     'LOCPRESENT': 0,  # Label as absence
-                     # Current date as placeholder
+                     'LOCPRESENT': 0,
                      'FINISHDATE': ee.Date(datetime.now().strftime('%Y-%m-%d'))
                  })
                  )
@@ -171,45 +185,33 @@ class GEEExporter:
         return filtered_non_swarm
 
     def prepare_training_data(self, fao_report_asset_id: str, aoi: ee.Geometry) -> ee.FeatureCollection:
-        """Prepare training data by combining presence and pseudo-absence points"""
-        # Load FAO desert locust report
-        locust_points = ee.FeatureCollection(fao_report_asset_id)
+        """Prepare training data by combining presence and pseudo-absence points."""
+        locust_points = ee.FeatureCollection(fao_report_asset_id).map(
+            lambda f: f.set('LOCPRESENT', 1)
+        )
 
-        # Ensure presence points have correct properties
-        locust_points = locust_points.map(lambda feature:
-                                          # Ensure presence is marked as 1
-                                          feature.set('LOCPRESENT', 1)
-                                          )
-
-        presence_count = locust_points.size().getInfo()
-        # Generate and get pseudo-absence points
+        # Generate pseudo-absence
         non_swarm_points = self.generate_pseudo_absence_points(
             locust_points, aoi)
-        absence_count = non_swarm_points.size().getInfo()
 
-        logging.info(
-            f"Presence points: {presence_count}, Absence points: {absence_count}")
-
-        # Merge presence and absence points
         return locust_points.merge(non_swarm_points)
 
     def create_export_task(self, feature_index: int, feature: ee.Feature, aoi: ee.Geometry) -> ee.batch.Task:
-        """Create an export task for a single feature"""
+        """Create an export task for a single feature."""
         finish_date = ee.Date(feature.get('FINISHDATE')
                               ).format('YYYY-MM-dd').getInfo()
         presence = feature.get('LOCPRESENT').getInfo()
-        # Extract time-lagged data
-        time_lagged_data = self.extract_time_lagged_data(feature).toFloat()
 
-        # Create multi-band image
+        # Create the multi-band image
+        time_lagged_data = self.extract_time_lagged_data(feature).toFloat()
         multi_band_image = ee.Image.cat([
             time_lagged_data,
             ee.Image.constant(feature.get('LOCPRESENT')
                               ).toFloat().rename('label')
         ]).clip(aoi)
 
-        # Create export task using keyword arguments
-        task = ee.batch.Export.image.toDrive(
+        # Export
+        return ee.batch.Export.image.toDrive(
             image=multi_band_image,
             description=f'et_locust_image_dataset_{finish_date}_presence_{presence}_{feature_index+1}',
             scale=self.common_scale,
@@ -219,13 +221,16 @@ class GEEExporter:
             folder='Thesis'
         )
 
-        return task
-
     def monitor_and_export(self, fao_report_asset_id: str, batch_size: int = 250):
+        """Run the export process in batches."""
         aoi = self.get_ethiopia_boundary()
         training_data = self.prepare_training_data(fao_report_asset_id, aoi)
+
         total_features = training_data.size().getInfo()
         num_batches = math.ceil(total_features / batch_size)
+
+        st.info(
+            f"Found {total_features} total features to export, in {num_batches} batches.")
 
         active_tasks: Dict[str, ee.batch.Task] = {}
         completed_count = 0
@@ -238,56 +243,72 @@ class GEEExporter:
             for idx, feature in enumerate(batch_features):
                 global_idx = start_idx + idx
 
-                # Throttle task creation to avoid exceeding limits
+                # Throttle tasks
                 while len(active_tasks) >= 250:
                     self._cleanup_tasks(active_tasks)
                     time.sleep(60)
 
-                # Create and start export task
+                # Create and start
                 feature_ee = ee.Feature(feature)
                 task = self.create_export_task(global_idx, feature_ee, aoi)
                 task.start()
                 active_tasks[f"task_{global_idx}"] = task
-                logging.info(
-                    f"Started export task for image {global_idx}/{total_features} of batch {batch_idx + 1}/{num_batches}")
 
-            # Monitor tasks periodically
+                st.write(f"Started export task for feature #{global_idx+1}")
+
+            # Wait for tasks in each batch
             while active_tasks:
                 self._cleanup_tasks(
                     active_tasks, completed_count, total_features)
-                time.sleep(60)  # Check every minute
+                if active_tasks:
+                    time.sleep(30)
 
-        logging.info(f"All exports completed. Total: {completed_count}")
+        st.success(f"All exports completed. Total: {completed_count}")
 
     def _cleanup_tasks(self, active_tasks: dict, completed_count: int = 0, total: int = 0):
-        """Cleanup completed/failed tasks and update counters."""
+        """Check task statuses, remove completed/failed tasks."""
         for task_id, task in list(active_tasks.items()):
             status = task.status()
             if status["state"] == "COMPLETED":
                 del active_tasks[task_id]
                 completed_count += 1
-                if completed_count % 100 == 0:
-                    logging.info(f"Progress: {completed_count}/{total}")
             elif status["state"] == "FAILED":
                 logging.error(
                     f"Task {task_id} failed: {status.get('error_message')}")
                 del active_tasks[task_id]
 
-# Main function to initialize and run the exporter
 
+# -----------------------------
+# 3) Streamlit UI
+# -----------------------------
+def main():
+    st.title("Ethiopia Locust Data Export")
 
-def main(fao_report_asset_id: str):
-    # Initialize GEEExporter instance
-    exporter = GEEExporter()
+    # Ask user for a FAO asset ID
+    fao_report_asset_id = st.text_input(
+        label="FAO Report Asset ID",
+        value="projects/desert-locust-forcast/assets/FAO_Swarm_Report_RAW_2019_2021"
+    )
 
-    # Initialize Earth Engine
-    exporter.initialize_ee()
+    batch_size = st.number_input("Batch Size", min_value=1, value=250)
 
-    # Start the monitoring and exporting tasks
-    exporter.monitor_and_export(fao_report_asset_id)
+    if st.button("Run Export"):
+        exporter = GEEExporter()
+        with st.spinner("Initializing Earth Engine..."):
+            try:
+                exporter.initialize_ee()
+            except Exception as e:
+                st.error(f"Failed to initialize EE: {e}")
+                return
+
+        # Start the export
+        with st.spinner("Exporting... check progress in logs."):
+            try:
+                exporter.monitor_and_export(
+                    fao_report_asset_id, batch_size=batch_size)
+            except Exception as e:
+                st.error(f"Error during export: {e}")
 
 
 if __name__ == "__main__":
-    # Example FAO report asset ID (replace with actual asset ID)
-    fao_report_asset_id = 'projects/desert-locust-forcast/assets/FAO_Swarm_Report_RAW_2019_2021'
-    main(fao_report_asset_id)
+    main()
