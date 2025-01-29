@@ -3,6 +3,7 @@ import ee
 import time
 import logging
 from datetime import datetime
+from google.oauth2 import service_account
 import math
 from typing import Dict
 
@@ -26,7 +27,10 @@ class GEEExporter:
     def initialize_ee(self):
         """Initialize Earth Engine"""
         try:
-            ee.Initialize()
+            service_account_keys = st.secrets["service_account"]
+            credentials = service_account.Credentials.from_service_account_info(
+                service_account_keys, scopes=ee.oauth.SCOPES)
+            ee.Initialize(credentials)
             logging.info("Earth Engine initialized successfully")
         except Exception as e:
             logging.error(f"Failed to initialize Earth Engine: {str(e)}")
@@ -221,76 +225,84 @@ class GEEExporter:
             folder='Thesis'
         )
 
-    def monitor_and_export(self, fao_report_asset_id: str, batch_size: int = 250):
-        """Run the export process in batches."""
+    def monitor_and_export(self, fao_report_asset_id: str, max_concurrent_tasks: int = 5):
+        """Run the export process with queue management and concurrency control."""
         aoi = self.get_ethiopia_boundary()
         training_data = self.prepare_training_data(fao_report_asset_id, aoi)
 
-        total_features = training_data.size().getInfo()
-        num_batches = math.ceil(total_features / batch_size)
+        # Convert FeatureCollection to list of features
+        all_features = training_data.toList(training_data.size()).getInfo()
+        total_features = len(all_features)
+        st.info(f"Found {total_features} features to export.")
 
-        st.info(
-            f"Found {total_features} total features to export, in {num_batches} batches.")
+        # Prepare all export tasks
+        task_queue = []
+        for feature_index, feature in enumerate(all_features):
+            feature_ee = ee.Feature(feature)
+            task = self.create_export_task(feature_index, feature_ee, aoi)
+            task_queue.append(task)
 
-        active_tasks: Dict[str, ee.batch.Task] = {}
+        active_tasks: List[ee.batch.Task] = []
         completed_count = 0
 
-        for batch_idx in range(num_batches):
-            start_idx = batch_idx * batch_size
-            batch_features = training_data.toList(
-                batch_size, start_idx).getInfo()
-
-            for idx, feature in enumerate(batch_features):
-                global_idx = start_idx + idx
-
-                # Throttle tasks
-                while len(active_tasks) >= 250:
-                    self._cleanup_tasks(active_tasks)
-                    time.sleep(60)
-
-                # Create and start
-                feature_ee = ee.Feature(feature)
-                task = self.create_export_task(global_idx, feature_ee, aoi)
+        # Process tasks with queue system
+        while task_queue or active_tasks:
+            # Start tasks up to max concurrency
+            while len(active_tasks) < max_concurrent_tasks and task_queue:
+                task = task_queue.pop(0)
                 task.start()
-                active_tasks[f"task_{global_idx}"] = task
+                active_tasks.append(task)
+                task_desc = task.status().get('description', 'Unknown task')
+                logging.info(f"Started export task: {task_desc}")
+                st.write(f"🟡 Started task: {task_desc}")
 
-                st.write(f"Started export task for feature #{global_idx+1}")
+            # Check task statuses
+            for task in list(active_tasks):
+                status = task.status()
+                state = status.get('state', 'UNKNOWN')
+                task_id = status.get('id', 'Unknown ID')
+                task_desc = status.get('description', 'Unknown task')
+                if active_tasks % 250 == 0:
+                    logging.info(
+                        f"🚧 Export progress: {completed_count}/{total_features}")
+                    st.write(
+                        f"🚧 Export progress: {completed_count}/{total_features}")
+                if state == 'COMPLETED':
+                    active_tasks.remove(task)
+                    completed_count += 1
+                    logging.info(
+                        f"✅ Export completed: {task_desc} (ID: {task_id})")
+                    st.success(
+                        f"✅ Completed {completed_count}/{total_features}: {task_desc}")
+                elif state in ['FAILED', 'CANCELED']:
+                    active_tasks.remove(task)
+                    error_msg = status.get('error_message', 'No error message')
+                    logging.error(
+                        f"❌ Export failed: {task_desc} - {error_msg}")
+                    st.error(f"❌ Failed: {task_desc} - {error_msg}")
 
-            # Wait for tasks in each batch
-            while active_tasks:
-                self._cleanup_tasks(
-                    active_tasks, completed_count, total_features)
-                if active_tasks:
-                    time.sleep(30)
+            # Throttle API calls
+            time.sleep(30)
 
-        st.success(f"All exports completed. Total: {completed_count}")
-
-    def _cleanup_tasks(self, active_tasks: dict, completed_count: int = 0, total: int = 0):
-        """Check task statuses, remove completed/failed tasks."""
-        for task_id, task in list(active_tasks.items()):
-            status = task.status()
-            if status["state"] == "COMPLETED":
-                del active_tasks[task_id]
-                completed_count += 1
-            elif status["state"] == "FAILED":
-                logging.error(
-                    f"Task {task_id} failed: {status.get('error_message')}")
-                del active_tasks[task_id]
-
+        logging.info(
+            f"All exports completed. Total: {completed_count}/{total_features}")
+        st.success(
+            f"All exports completed! Total processed: {completed_count}")
 
 # -----------------------------
 # 3) Streamlit UI
 # -----------------------------
+
+
 def main():
     st.title("Ethiopia Locust Data Export")
 
-    # Ask user for a FAO asset ID
+    # User inputs
     fao_report_asset_id = st.text_input(
-        label="FAO Report Asset ID",
-        value="projects/desert-locust-forcast/assets/FAO_Swarm_Report_RAW_2019_2021"
+        "FAO Report Asset ID",
+        "projects/desert-locust-forcast/assets/FAO_Swarm_Report_RAW_2019_2021"
     )
-
-    batch_size = st.number_input("Batch Size", min_value=1, value=250)
+    max_concurrent = st.number_input("Max Concurrent Tasks", 1, 250, 5)
 
     if st.button("Run Export"):
         exporter = GEEExporter()
@@ -301,13 +313,14 @@ def main():
                 st.error(f"Failed to initialize EE: {e}")
                 return
 
-        # Start the export
-        with st.spinner("Exporting... check progress in logs."):
+        with st.spinner("Exporting..."):
             try:
                 exporter.monitor_and_export(
-                    fao_report_asset_id, batch_size=batch_size)
+                    fao_report_asset_id,
+                    max_concurrent_tasks=max_concurrent
+                )
             except Exception as e:
-                st.error(f"Error during export: {e}")
+                st.error(f"Export error: {str(e)}")
 
 
 if __name__ == "__main__":
