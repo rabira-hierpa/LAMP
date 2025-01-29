@@ -225,7 +225,7 @@ class GEEExporter:
             folder='Thesis'
         )
 
-    def monitor_and_export(self, fao_report_asset_id: str, max_concurrent_tasks: int = 5):
+    def monitor_and_export(self, fao_report_asset_id: str, max_concurrent_tasks: int = 250):
         """Run the export process with queue management and concurrency control."""
         aoi = self.get_ethiopia_boundary()
         training_data = self.prepare_training_data(fao_report_asset_id, aoi)
@@ -302,7 +302,7 @@ def main():
         "FAO Report Asset ID",
         "projects/desert-locust-forcast/assets/FAO_Swarm_Report_RAW_2019_2021"
     )
-    max_concurrent = st.number_input("Max Concurrent Tasks", 1, 250, 5)
+    max_concurrent = st.number_input("Max Concurrent Tasks", 1, 250, 250)
 
     if st.button("Run Export"):
         exporter = GEEExporter()
