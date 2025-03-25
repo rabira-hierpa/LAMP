@@ -1,2 +1,4 @@
 .DS_Store
 .streamlit/secrets.toml
+.qodo
+locust_export.log
