@@ -422,6 +422,8 @@ def create_export_task(feature_index, feature):
         # First check if the feature has the required properties
         required_properties = ['Obs Date', 'Locust Presence', 'x', 'y']
         for prop in required_properties:
+            logging.info(
+                f'Feature Property Names: {feature.propertyNames().getInfo()}')
             if not feature.propertyNames().contains(prop).getInfo():
                 logging.warning(
                     f"Feature {feature_index} missing required property: {prop}")
@@ -429,6 +431,14 @@ def create_export_task(feature_index, feature):
 
         # Get the observation date client-side
         try:
+            obs_date_is_null = ee.Algorithms.IsEqual(
+                feature.get('Obs Date'), None).getInfo()
+            print(f'Obs Date Is Null: {obs_date_is_null}')
+            if obs_date_is_null:
+                logging.warning(
+                    f"Feature {feature_index} has null 'Obs Date' value")
+                return None
+
             # Get the raw date value
             obs_date_raw = feature.get('Obs Date')
 
@@ -470,7 +480,7 @@ def create_export_task(feature_index, feature):
 
             # Create Earth Engine date object
             ee_date = ee.Date(formatted_date)
-
+            logging.info(f'EE Date: {ee_date}')
         except Exception as e:
             logging.warning(
                 f"Error parsing date for feature {feature_index}: {e}")
@@ -505,7 +515,7 @@ def create_export_task(feature_index, feature):
 
         # Prepare for export
         time_lagged_data = time_lagged_data.toFloat()
-        patch_geometry = feature.geometry().buffer(10000)
+        patch_geometry = feature.geometry().buffer(10000)  # 10km buffer
 
         # Create multi-band image with label
         multi_band_image = ee.Image.cat([
@@ -829,6 +839,18 @@ def main():
     # Load FAO locust data
     locust_data = ee.FeatureCollection(fao_report_asset_id)
 
+    # Filter out features with null 'x' or 'y'
+    locust_data = locust_data.filter(ee.Filter.And(
+        ee.Filter.neq('x', None),
+        ee.Filter.neq('y', None)
+    ))
+
+    # Log the impact of filtering to diagnose data quality
+    original_count = ee.FeatureCollection(fao_report_asset_id).size().getInfo()
+    filtered_count = locust_data.size().getInfo()
+    logging.info(
+        f"Original features: {original_count}, after filtering null x/y: {filtered_count}")
+
     # Add geometry to features
     locust_data_with_geometry = locust_data.map(lambda feature:
                                                 feature.setGeometry(ee.Geometry.Point([
@@ -876,7 +898,7 @@ def main():
     if args.test:
         single_point = ee.Feature(features.get(args.start_index))
         logging.info('Processing test point...')
-
+        print(f'Single Point: {single_point}')
         task_tuple = create_export_task(args.start_index, single_point)
         if task_tuple:
             task, description = task_tuple
