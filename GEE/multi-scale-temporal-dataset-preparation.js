@@ -1328,52 +1328,6 @@ function visualizeMultiScaleFeatures(multiScaleData, geometry) {
   }
 }
 
-// Main Execution Function
-function main() {
-  // Load locust observation dataset
-  var locustData = ee.FeatureCollection(
-    "projects/desert-locust-forcast/assets/FAO_filtered_data_2000"
-  );
-
-  // Filter data for specific region and time period
-  var filteredData = locustData
-    .filter(ee.Filter.inList("Country", ["Ethiopia"]))
-    .filter(ee.Filter.greaterThan("year", 2010))
-    .filter(ee.Filter.lessThan("year", 2022));
-
-  // Limit number of features for initial testing
-  var sampleSize = 50;
-  var sampledData = filteredData
-    .randomColumn()
-    .sort("random")
-    .limit(sampleSize);
-
-  // Process each feature
-  sampledData.toList(sampleSize).evaluate(function (features) {
-    features.forEach(function (feature, index) {
-      createMultiScaleExportTask(index, feature);
-    });
-  });
-}
-
-// Optional: Logging and Error Tracking
-function initializeLogging() {
-  // Setup logging mechanism
-  var logFile = ee.FeatureCollection([
-    ee.Feature(null, {
-      timestamp: Date.now(),
-      message: "Locust Movement Prediction - Multi-Scale Analysis Started",
-    }),
-  ]);
-
-  // Export log to Google Drive
-  Export.table.toDrive({
-    collection: logFile,
-    description: "Locust_Prediction_Log_" + Date.now(),
-    fileFormat: "CSV",
-  });
-}
-
 // Configuration Object
 var CONFIG = {
   MIN_OBSERVATIONS: 10,
@@ -1387,15 +1341,25 @@ var CONFIG = {
   DEBUG_MODE: true,
 };
 
-// Run the main script
-try {
-  // Initialize logging if in debug mode
-  if (CONFIG.DEBUG_MODE) {
-    initializeLogging();
-  }
+// Directly usable in GEE Code Editor
+// Load locust observation dataset
+var locustData = ee.FeatureCollection(
+  "projects/desert-locust-forcast/assets/FAO_filtered_data_2000"
+);
 
-  // Execute main analysis
-  main();
-} catch (error) {
-  print("Critical Error in Locust Movement Prediction:", error);
-}
+// Filter data for specific region and time period
+var filteredData = locustData
+  .filter(ee.Filter.inList("Country", ["Ethiopia"]))
+  .filter(ee.Filter.greaterThan("year", 2010))
+  .filter(ee.Filter.lessThan("year", 2022));
+
+// Optional: Limit number of features for initial testing
+var sampleSize = 50;
+var sampledData = filteredData.randomColumn().sort("random").limit(sampleSize);
+
+// Directly process features
+sampledData.toList(sampleSize).evaluate(function (features) {
+  features.forEach(function (feature, index) {
+    createMultiScaleExportTask(index, feature);
+  });
+});
