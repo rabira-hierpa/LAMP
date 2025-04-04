@@ -125,69 +125,27 @@ def date_to_ee_date(date_str: str) -> ee.Date:
 
 def parse_observation_date(feature: ee.Feature, feature_index: int) -> Optional[Tuple[ee.Date, str]]:
     """
-    Parse the observation date from a feature.
+    Parse the observation date from a feature with a pre-formatted date.
 
     Args:
-        feature: Feature containing 'Obs Date' property
+        feature: Feature containing 'formatted_date' property
         feature_index: Index for logging purposes
 
     Returns:
         Tuple of (ee.Date, formatted_date_str) if successful, None otherwise
     """
     try:
-        # Server-side check if 'Obs Date' exists and is not null
-        has_obs_date = feature.propertyNames().contains('Obs Date')
-        obs_date_is_null = ee.Algorithms.IsEqual(feature.get('Obs Date'), None)
+        # Get the formatted date (already in YYYY-MM-DD format)
+        formatted_date = feature.get('formatted_date')
 
-        # Use ee.Algorithms.If for conditional check server-side
-        should_process_date = ee.Algorithms.If(
-            has_obs_date.And(obs_date_is_null.Not()),
-            True,
-            False
-        )
+        # Create EE Date object server-side
+        ee_date = ee.Date(formatted_date)
 
-        if not should_process_date.getInfo():
-            logging.warning(
-                f"Feature {feature_index} has missing or null 'Obs Date'. Skipping.")
-            return None
-
-        # Get the raw date value safely
-        obs_date_raw = feature.get('Obs Date')
-        obs_date_client = obs_date_raw.getInfo()  # GetInfo only if needed
-
-        # Validate client-side date format
-        if not isinstance(obs_date_client, str) or '/' not in obs_date_client:
-            logging.warning(
-                f"Feature {feature_index} has invalid date format: {obs_date_client}. Skipping.")
-            return None
-
-        # Process the date parts carefully
-        date_parts = obs_date_client.split(' ')[0].split('/')
-        if len(date_parts) < 3:
-            logging.warning(
-                f"Feature {feature_index} invalid date parts: {date_parts}. Skipping.")
-            return None
-
-        month, day, year = date_parts[0].zfill(
-            2), date_parts[1].zfill(2), date_parts[2]
-
-        # Validate year
-        import datetime
-        if len(year) != 4 or not (1900 <= int(year) <= datetime.datetime.now().year + 1):
-            logging.warning(
-                f"Feature {feature_index} has invalid year: {year}. Skipping.")
-            return None
-
-        formatted_date = f"{year}-{month}-{day}"
-        ee_date = ee.Date(formatted_date)  # Create EE Date server-side
-        logging.info(
-            f"Feature {feature_index}: Successfully parsed date: {formatted_date}")
-
-        return ee_date, formatted_date
+        return ee_date, formatted_date.getInfo()
 
     except Exception as e:
         logging.warning(
-            f"Error parsing date for feature {feature_index}: {e}. Raw date: {obs_date_client if 'obs_date_client' in locals() else 'N/A'}. Skipping.")
+            f"Error parsing date for feature {feature_index}: {e}. Skipping.")
         return None
 
 

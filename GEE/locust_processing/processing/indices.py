@@ -63,9 +63,30 @@ def calculate_tci(image: ee.Image) -> ee.Image:
     return image.addBands([tci30, tci60, tci90])
 
 
+def calculate_ndwi(image: ee.Image) -> ee.Image:
+    """
+    Calculate Normalized Difference Water Index.
+
+    The NDWI bands should be already computed and present in the input image
+    with names NDWI_30, NDWI_60, NDWI_90.
+
+    Args:
+        image: Earth Engine image with NDWI bands
+
+    Returns:
+        Earth Engine image with NDWI bands renamed/reorganized
+    """
+    ndwi30 = image.select('NDWI_30').rename('NDWI_30')
+    ndwi60 = image.select('NDWI_60').rename('NDWI_60')
+    ndwi90 = image.select('NDWI_90').rename('NDWI_90')
+    return image.addBands([ndwi30, ndwi60, ndwi90])
+
+
 def calculate_tvdi(image: ee.Image) -> ee.Image:
     """
     Calculate Temperature Vegetation Dryness Index.
+
+    TVDI = (LST - 273.15) / (NDVI * 10 + 273.15)
 
     Args:
         image: Earth Engine image with NDVI and LST bands
@@ -73,51 +94,29 @@ def calculate_tvdi(image: ee.Image) -> ee.Image:
     Returns:
         Earth Engine image with TVDI bands added
     """
-    global et_boundary
-
-    if et_boundary is None:
-        logging.warning(
-            "Region boundary not set for TVDI calculation. Using global extent.")
-        et_boundary = ee.Geometry.Rectangle([-180, -90, 180, 90])
-
-    def compute_tvdi(ndvi, lst, ndvi_tag, lst_tag):
-        # Get the LST min for the region
-        lst_min = lst.reduceRegion(
-            reducer=ee.Reducer.min(),
-            geometry=et_boundary,
-            scale=1000,
-            maxPixels=1e9
-        ).get(lst_tag)
-
-        # Define parameters for the dry edge (simplified approximation)
-        a = 273.15  # Intercept
-        b = 50      # Slope
-
-        # Calculate TVDI
-        return lst.subtract(lst_min) \
-            .divide(a.add(ndvi.multiply(b)).subtract(lst_min)) \
-            .rename('TVDI_' + ndvi_tag.split('_')[-1])
-
-    # Calculate TVDI for each time period
-    tvdi30 = compute_tvdi(
-        image.select('NDVI_30'),
-        image.select('LST_Day_1km_30'),
-        'NDVI_30',
-        'LST_Day_1km_30'
-    )
-
-    tvdi60 = compute_tvdi(
-        image.select('NDVI_60'),
-        image.select('LST_Day_1km_60'),
-        'NDVI_60',
-        'LST_Day_1km_60'
-    )
-
-    tvdi90 = compute_tvdi(
-        image.select('NDVI_90'),
-        image.select('LST_Day_1km_90'),
-        'NDVI_90',
-        'LST_Day_1km_90'
-    )
+    # Simplified approach for calculating TVDI
+    tvdi30 = image.select('LST_Day_1km_30').subtract(273.15).divide(
+        image.select('NDVI_30').multiply(10).add(273.15)).rename('TVDI_30')
+    tvdi60 = image.select('LST_Day_1km_60').subtract(273.15).divide(
+        image.select('NDVI_60').multiply(10).add(273.15)).rename('TVDI_60')
+    tvdi90 = image.select('LST_Day_1km_90').subtract(273.15).divide(
+        image.select('NDVI_90').multiply(10).add(273.15)).rename('TVDI_90')
 
     return image.addBands([tvdi30, tvdi60, tvdi90])
+
+
+def calculate_all_indices(image: ee.Image) -> ee.Image:
+    """
+    Calculate all vegetation and drought indices.
+
+    Args:
+        image: Earth Engine image with required bands
+
+    Returns:
+        Earth Engine image with all indices added
+    """
+    image = calculate_tci(image)
+    image = calculate_vhi(image)
+    image = calculate_ndwi(image)
+    image = calculate_tvdi(image)
+    return image

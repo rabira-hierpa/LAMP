@@ -32,11 +32,30 @@ def read_large_csv(file_path, required_columns):
 
     print(f"Original number of rows: {len(df)}")
     # Filter out rows where 'Obs Date' is less than the year 2000
-    df = df[df['Year'] >= 2018]
-    print(f"Number of rows after filtering Obs Date after 2000: {len(df)}")
+    df = df[df['Year'] >= 2015]
+    print(f"Number of rows after filtering Obs Date after 2015: {len(df)}")
 
-    # Sort by Year
-    df = df.sort_values(by='Year', ascending=True)
+    # Format the date to YYYY-MM-DD
+    # Use expand=True to get a DataFrame instead of a Series of lists
+    date_time_parts = df['Obs Date'].str.split(' ', expand=True)
+    date_parts = date_time_parts[0].str.split('/', expand=True)
+
+    # Now we have a DataFrame with columns for month, day, year
+    month = date_parts[0].str.zfill(2)  # Pad with leading zeros
+    day = date_parts[1].str.zfill(2)    # Pad with leading zeros
+    year = date_parts[2]                # Year (might contain extra characters)
+
+    # Extract only the year part in case there are additional characters
+    year = year.str.extract(r'(\d{4})', expand=False)
+
+    # Create formatted date YYYY-MM-DD
+    df['formatted_date'] = year + '-' + month + '-' + day
+
+    print("Date formatting example:")
+    print(df[['Obs Date', 'formatted_date']].head())
+
+    # Sort by formatted_date
+    df = df.sort_values(by='formatted_date', ascending=True)
 
     # If 'index' is not in required columns, add it
     if 'index' not in required_columns:
@@ -66,6 +85,6 @@ if __name__ == "__main__":
     print(df.head())
 
     # # Save the extracted data to a new CSV file if needed
-    output_path = "/Users/rz/Msc/Data/FAO_archival_data_extracted_2018.csv"
+    output_path = "/Users/rz/Msc/Data/FAO_archival_data_extracted_2015.csv"
     df.to_csv(output_path, index=False)
     print(f"\nExtracted data saved to: {output_path}")
