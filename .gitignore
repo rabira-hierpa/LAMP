@@ -3,3 +3,11 @@
 .qodo
 locust_export.log
 .vscode/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pyw
+*.pyz
