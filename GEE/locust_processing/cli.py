@@ -186,8 +186,8 @@ def process_in_batch_mode(filtered_data: ee.FeatureCollection,
         collection_size = filtered_data.size().getInfo()
         if collection_size > 0:
             # Safely get first feature
-            first_feature = filtered_data.limit(1).first().getInfo()
-            if first_feature and 'properties' in first_feature and 'index' in first_feature['properties']:
+            first_feature = filtered_data.limit(1).first()
+            if first_feature.get('index') is not None:
                 has_index = True
                 logging.info(
                     "Collection has 'index' property, using it for filtering.")
