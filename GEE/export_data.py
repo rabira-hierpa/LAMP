@@ -307,7 +307,8 @@ def extract_time_lagged_data(point):
             .filterDate(lags[lag], date)
 
         # Skip if collection is empty
-        if collection.size().getInfo() == 0:
+        collection_size = collection.size().getInfo()  # Get size once
+        if collection_size == 0:
             logging.warning(
                 f"No data available for {collection_id} with bands {bands} from {lags[lag].format().getInfo()} to {date.format().getInfo()}")
             return None
@@ -358,12 +359,6 @@ def extract_time_lagged_data(point):
         "ERA5_V_WIND_10M_30": compute_variable("ECMWF/ERA5/DAILY", ["v_component_of_wind_10m"], "mean", "30"),
         "ERA5_V_WIND_10M_60": compute_variable("ECMWF/ERA5/DAILY", ["v_component_of_wind_10m"], "mean", "60"),
         "ERA5_V_WIND_10M_90": compute_variable("ECMWF/ERA5/DAILY", ["v_component_of_wind_10m"], "mean", "90"),
-        "ERA5_U_WIND_50M_30": compute_variable("ECMWF/ERA5/DAILY", ["u_component_of_wind_50m"], "mean", "30"),
-        "ERA5_U_WIND_50M_60": compute_variable("ECMWF/ERA5/DAILY", ["u_component_of_wind_50m"], "mean", "60"),
-        "ERA5_U_WIND_50M_90": compute_variable("ECMWF/ERA5/DAILY", ["u_component_of_wind_50m"], "mean", "90"),
-        "ERA5_V_WIND_50M_30": compute_variable("ECMWF/ERA5/DAILY", ["v_component_of_wind_50m"], "mean", "30"),
-        "ERA5_V_WIND_50M_60": compute_variable("ECMWF/ERA5/DAILY", ["v_component_of_wind_50m"], "mean", "60"),
-        "ERA5_V_WIND_50M_90": compute_variable("ECMWF/ERA5/DAILY", ["v_component_of_wind_50m"], "mean", "90"),
         "SMAP_SM_30": compute_variable("NASA/SMAP/SPL4SMGP/007", ["sm_surface"], "mean", "30"),
         "SMAP_SM_60": compute_variable("NASA/SMAP/SPL4SMGP/007", ["sm_surface"], "mean", "60"),
         "SMAP_SM_90": compute_variable("NASA/SMAP/SPL4SMGP/007", ["sm_surface"], "mean", "90"),
@@ -401,7 +396,7 @@ def extract_time_lagged_data(point):
 
     # Create 7x7x2 locust report image
     locust_report_image = create_locust_report_image(
-        point, date, 20000)  # 20km resolution
+        point, date, 1000)  # 1km resolution
 
     # Combine all data
     final_image = ee.Image.cat([combined_image, locust_report_image])
@@ -419,86 +414,96 @@ def extract_time_lagged_data(point):
 def create_export_task(feature_index, feature):
     """Create an export task for a feature"""
     try:
-        # First check if the feature has the required properties
-        required_properties = ['Obs Date', 'Locust Presence', 'x', 'y']
-        for prop in required_properties:
-            logging.info(
-                f'Feature Property Names: {feature.propertyNames().getInfo()}')
-            if not feature.propertyNames().contains(prop).getInfo():
-                logging.warning(
-                    f"Feature {feature_index} missing required property: {prop}")
-                return None
+        # Ensure feature is an ee.Feature object
+        # if not isinstance(feature, ee.Feature):
+        #     logging.warning(
+        #         f"Input for feature_index {feature_index} is not an ee.Feature. Skipping.")
+        #     return None
 
         # Get the observation date client-side
         try:
+            # Server-side check if 'Obs Date' exists and is not null
+            has_obs_date = feature.propertyNames().contains('Obs Date')
             obs_date_is_null = ee.Algorithms.IsEqual(
-                feature.get('Obs Date'), None).getInfo()
-            print(f'Obs Date Is Null: {obs_date_is_null}')
-            if obs_date_is_null:
+                feature.get('Obs Date'), None)
+
+            # Use ee.Algorithms.If for conditional check server-side
+            should_process_date = ee.Algorithms.If(
+                has_obs_date.And(obs_date_is_null.Not()),
+                True,
+                False
+            )
+
+            if not should_process_date.getInfo():
                 logging.warning(
-                    f"Feature {feature_index} has null 'Obs Date' value")
+                    f"Feature {feature_index} has missing or null 'Obs Date'. Skipping.")
                 return None
 
-            # Get the raw date value
+            # Get the raw date value safely
             obs_date_raw = feature.get('Obs Date')
+            obs_date_client = obs_date_raw.getInfo()  # GetInfo only if needed
 
-            # Convert to client side for processing
-            obs_date_client = obs_date_raw.getInfo()
-
-            # Skip if date is missing or invalid
-            if obs_date_client is None or not isinstance(obs_date_client, str):
+            # Validate client-side date format
+            if not isinstance(obs_date_client, str) or '/' not in obs_date_client:
                 logging.warning(
-                    f"Feature {feature_index} has invalid or missing date")
+                    f"Feature {feature_index} has invalid date format: {obs_date_client}. Skipping.")
                 return None
 
-            # Check if it contains a slash (MM/DD/YYYY format)
-            if '/' not in obs_date_client:
-                logging.warning(
-                    f"Feature {feature_index} date does not contain slash: {obs_date_client}")
-                return None
-
-            # Process the date
+            # Process the date parts carefully
             date_parts = obs_date_client.split(' ')[0].split('/')
-
             if len(date_parts) < 3:
                 logging.warning(
-                    f"Feature {feature_index} has invalid date format: {obs_date_client}")
+                    f"Feature {feature_index} invalid date parts: {date_parts}. Skipping.")
                 return None
 
-            month = date_parts[0].zfill(2)
-            day = date_parts[1].zfill(2)
-            year = date_parts[2]
+            month, day, year = date_parts[0].zfill(
+                2), date_parts[1].zfill(2), date_parts[2]
 
-            # Validate year - should be 4 digits and reasonable
-            if len(year) != 4 or not (1900 < int(year) < 2100):
+            # Validate year
+            if len(year) != 4 or not (1900 <= int(year) <= datetime.datetime.now().year + 1):
                 logging.warning(
-                    f"Feature {feature_index} has invalid year: {year}")
+                    f"Feature {feature_index} has invalid year: {year}. Skipping.")
                 return None
 
             formatted_date = f"{year}-{month}-{day}"
-            logging.info(f"Successfully parsed date: {formatted_date}")
+            ee_date = ee.Date(formatted_date)  # Create EE Date server-side
+            logging.info(
+                f"Feature {feature_index}: Successfully parsed date: {formatted_date}")
 
-            # Create Earth Engine date object
-            ee_date = ee.Date(formatted_date)
-            logging.info(f'EE Date: {ee_date}')
         except Exception as e:
             logging.warning(
-                f"Error parsing date for feature {feature_index}: {e}")
+                f"Error parsing date for feature {feature_index}: {e}. Raw date: {obs_date_client if 'obs_date_client' in locals() else 'N/A'}. Skipping.")
             return None
 
-        # Get the locust presence value
+        # Get the locust presence value server-side
         try:
-            presence_raw = feature.get('Locust Presence')
-            presence = presence_raw.getInfo()
+            has_presence = feature.propertyNames().contains('Locust Presence')
+            presence_raw = ee.Algorithms.If(
+                has_presence,
+                feature.get('Locust Presence'),
+                None  # Default to None if property doesn't exist
+            )
+            presence_is_null = ee.Algorithms.IsEqual(presence_raw, None)
 
+            # Check if presence is null server-side
+            if presence_is_null.getInfo():
+                logging.warning(
+                    f"Feature {feature_index} has missing or null 'Locust Presence'. Skipping.")
+                return None
+
+            presence = presence_raw.getInfo()  # GetInfo only when needed
+
+            # Validate presence value client-side
             if presence not in ['PRESENT', 'ABSENT']:
                 logging.warning(
-                    f"Feature {feature_index} has invalid presence value: {presence}")
+                    f"Feature {feature_index} has invalid presence value: '{presence}'. Skipping.")
                 return None
+            logging.info(
+                f"Feature {feature_index}: Presence value '{presence}' is valid.")
 
         except Exception as e:
             logging.warning(
-                f"Error getting presence for feature {feature_index}: {e}")
+                f"Error getting presence for feature {feature_index}: {e}. Skipping.")
             return None
 
         # Set the parsed date on the feature
@@ -510,12 +515,18 @@ def create_export_task(feature_index, feature):
         # Skip if data is missing
         if time_lagged_data is None:
             logging.warning(
-                f"Missing environmental data for feature {feature_index}")
+                f"Missing environmental data for feature {feature_index}. Skipping task creation.")
             return None
 
         # Prepare for export
         time_lagged_data = time_lagged_data.toFloat()
-        patch_geometry = feature.geometry().buffer(10000)  # 10km buffer
+        # Ensure geometry exists before buffering
+        feature_geometry = feature.geometry()
+        if feature_geometry is None:
+            logging.warning(
+                f"Feature {feature_index} has no geometry. Skipping.")
+            return None
+        patch_geometry = feature_geometry.buffer(10000)  # 10km buffer
 
         # Create multi-band image with label
         multi_band_image = ee.Image.cat([
@@ -536,12 +547,17 @@ def create_export_task(feature_index, feature):
             crs=common_projection,
             folder='Locust_Export'
         )
-
+        logging.info(
+            f"Created export task for feature {feature_index}: {export_description}")
         return export_task, export_description
 
+    except ee.EEException as e:
+        logging.error(
+            f"Earth Engine error creating export task for feature {feature_index}: {str(e)}. Skipping.")
+        return None
     except Exception as e:
         logging.error(
-            f"Error creating export task for feature {feature_index}: {str(e)}")
+            f"General error creating export task for feature {feature_index}: {str(e)}. Skipping.")
         return None
 
 # Class to manage task queue
@@ -805,7 +821,7 @@ def main():
         description='Export locust data from Earth Engine')
     parser.add_argument('--test', action='store_true',
                         help='Run with a single test point')
-    parser.add_argument('--batch-size', type=int, default=1000,
+    parser.add_argument('--batch-size', type=int, default=250,
                         help='Number of features to process in one batch')
     parser.add_argument('--start-index', type=int, default=0,
                         help='Index to start processing from')
@@ -832,7 +848,7 @@ def main():
     et_boundary = get_ethiopia_boundary()
     common_scale = 250
     common_projection = 'EPSG:4326'
-    fao_report_asset_id = 'projects/desert-locust-forcast/assets/ET_FAO_archival_data'
+    fao_report_asset_id = 'projects/desert-locust-forcast/assets/FAO_filtered_data_2000'
 
     logging.info("Loading FAO locust data...")
 
@@ -841,9 +857,15 @@ def main():
 
     # Filter out features with null 'x' or 'y'
     locust_data = locust_data.filter(ee.Filter.And(
-        ee.Filter.neq('x', None),
-        ee.Filter.neq('y', None)
+        ee.Filter.neq('Longitude', None),
+        ee.Filter.neq('Latitude', None)
     ))
+
+    # Filter out features with null 'Obs Date'
+    locust_data = locust_data.filter(ee.Filter.neq('Obs Date', None))
+
+    # Filter out features with null 'Locust Presence'
+    locust_data = locust_data.filter(ee.Filter.neq('Locust Presence', None))
 
     # Log the impact of filtering to diagnose data quality
     original_count = ee.FeatureCollection(fao_report_asset_id).size().getInfo()
@@ -851,31 +873,27 @@ def main():
     logging.info(
         f"Original features: {original_count}, after filtering null x/y: {filtered_count}")
 
-    # Add geometry to features
-    locust_data_with_geometry = locust_data.map(lambda feature:
-                                                feature.setGeometry(ee.Geometry.Point([
-                                                    ee.Number.parse(
-                                                        feature.get('x')),
-                                                    ee.Number.parse(
-                                                        feature.get('y'))
-                                                ]))
-                                                )
-
     # Filter for presence and absence points
     if args.presence_only:
         logging.info("Processing only presence points")
-        filtered_data = locust_data_with_geometry.filter(
+        filtered_data = locust_data.filter(
             ee.Filter.eq('Locust Presence', 'PRESENT'))
     elif args.absence_only:
         logging.info("Processing only absence points")
-        filtered_data = locust_data_with_geometry.filter(
+        filtered_data = locust_data.filter(
             ee.Filter.eq('Locust Presence', 'ABSENT'))
     else:
-        filtered_data = locust_data_with_geometry
+        filtered_data = locust_data
 
     # Get count of features
     feature_count = filtered_data.size().getInfo()
     logging.info(f'Total features to process: {feature_count}')
+
+    # Sorted by Year
+    filtered_data = filtered_data.sort('Year', ascending=False)
+
+    logging.info(
+        f'Indexed collection: {filtered_data.first().getInfo()}')
 
     # Limit to max features if specified
     if args.max_features is not None:
@@ -887,19 +905,19 @@ def main():
         logging.info(
             f"Processing all features from index {args.start_index} to {feature_count-1}")
 
-    # Convert to list for easier processing
-    features = filtered_data.toList(feature_count)
-
     # Load progress if available
     processed_indices, completed_count, failed_count, skipped_count = load_progress(
         args.progress_file)
 
     # Test mode - process a single point
     if args.test:
-        single_point = ee.Feature(features.get(args.start_index))
+        single_point = filtered_data.filter(
+            ee.Filter.eq('index', args.start_index)).first()
         logging.info('Processing test point...')
-        print(f'Single Point: {single_point}')
-        task_tuple = create_export_task(args.start_index, single_point)
+        logging.info(
+            f'Feature Property Names: {single_point.propertyNames().getInfo()}')
+        task_tuple = create_export_task(
+            args.start_index, single_point.getInfo())
         if task_tuple:
             task, description = task_tuple
             task.start()

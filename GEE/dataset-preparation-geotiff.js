@@ -44,6 +44,56 @@ function calculateTCI(image) {
   return image.addBands([tci30, tci60, tci90]);
 }
 
+// Function to calculate TVDI
+function calculateTVDI(image, geometry) {
+  // Define a function to compute TVDI
+  var computeTVDI = function (ndvi, lst, ndviTag, lstTag) {
+    // Get the LST min and max for the region
+    var lstMin = lst
+      .reduceRegion({
+        reducer: ee.Reducer.min(),
+        geometry: geometry,
+        scale: 1000,
+        maxPixels: 1e9,
+      })
+      .get(lstTag);
+
+    // Define parameters for the dry edge (simplified approximation)
+    var a = 273.15; // Intercept
+    var b = 50; // Slope
+
+    // Calculate TVDI
+    return lst
+      .subtract(lstMin)
+      .divide(ee.Image.constant(a).add(ndvi.multiply(b)).subtract(lstMin))
+      .rename("TVDI_" + ndviTag.split("_").pop());
+  };
+
+  // Calculate TVDI for each time period
+  var tvdi30 = computeTVDI(
+    image.select("NDVI_30"),
+    image.select("LST_Day_1km_30"),
+    "NDVI_30",
+    "LST_Day_1km_30"
+  );
+
+  var tvdi60 = computeTVDI(
+    image.select("NDVI_60"),
+    image.select("LST_Day_1km_60"),
+    "NDVI_60",
+    "LST_Day_1km_60"
+  );
+
+  var tvdi90 = computeTVDI(
+    image.select("NDVI_90"),
+    image.select("LST_Day_1km_90"),
+    "NDVI_90",
+    "LST_Day_1km_90"
+  );
+
+  return image.addBands([tvdi30, tvdi60, tvdi90]);
+}
+
 // Function to create 7x7x2 image representation for locust reports
 function createLocustReportImage(point, date, spatialResolution) {
   var geometry = point.geometry();
@@ -92,7 +142,7 @@ function createLocustReportImage(point, date, spatialResolution) {
 
   // Filter locust reports for each time period
   var locustReports = ee.FeatureCollection(
-    "projects/desert-locust-forcast/assets/ET_FAO_archival_data"
+    "projects/desert-locust-forcast/assets/FAO_ALL_Reports"
   );
 
   // Count presence and absence reports for each grid cell for each time period
@@ -205,6 +255,15 @@ function extractTimeLaggedData(point) {
     .select("sand_15-30cm_mean")
     .rename("sand_15_30cm");
 
+  // Add elevation data (SRTM)
+  var elevation = ee.Image("USGS/SRTMGL1_003").rename("elevation");
+
+  // Add land cover
+  var landcover = ee
+    .Image("MODIS/006/MCD12Q1/2019_01_01")
+    .select("LC_Type1")
+    .rename("landcover");
+
   // Extract Actual Evapotranspiration data
   var aet30 = computeVariable("MODIS/006/MOD16A2", ["ET"], "sum", "30")
     .multiply(0.1)
@@ -240,6 +299,28 @@ function extractTimeLaggedData(point) {
     "90"
   ).rename("TerraClimate_AET_90");
 
+  // Add Total Biomass Productivity (from TerraClimate)
+  var tbp30 = computeVariable(
+    "IDAHO_EPSCOR/TERRACLIMATE",
+    ["pet"],
+    "mean",
+    "30"
+  ).rename("TBP_30");
+
+  var tbp60 = computeVariable(
+    "IDAHO_EPSCOR/TERRACLIMATE",
+    ["pet"],
+    "mean",
+    "60"
+  ).rename("TBP_60");
+
+  var tbp90 = computeVariable(
+    "IDAHO_EPSCOR/TERRACLIMATE",
+    ["pet"],
+    "mean",
+    "90"
+  ).rename("TBP_90");
+
   var images = [
     computeVariable("MODIS/061/MOD13A2", ["NDVI"], "mean", "30"),
     computeVariable("MODIS/061/MOD13A2", ["NDVI"], "mean", "60"),
@@ -253,6 +334,7 @@ function extractTimeLaggedData(point) {
     computeVariable("UCSB-CHG/CHIRPS/DAILY", ["precipitation"], "sum", "30"),
     computeVariable("UCSB-CHG/CHIRPS/DAILY", ["precipitation"], "sum", "60"),
     computeVariable("UCSB-CHG/CHIRPS/DAILY", ["precipitation"], "sum", "90"),
+    // Wind at 10m
     computeVariable(
       "ECMWF/ERA5/DAILY",
       ["u_component_of_wind_10m"],
@@ -289,13 +371,58 @@ function extractTimeLaggedData(point) {
       "mean",
       "90"
     ),
+    // Wind at 50m
+    computeVariable(
+      "ECMWF/ERA5/DAILY",
+      ["u_component_of_wind_50m"],
+      "mean",
+      "30"
+    ),
+    computeVariable(
+      "ECMWF/ERA5/DAILY",
+      ["u_component_of_wind_50m"],
+      "mean",
+      "60"
+    ),
+    computeVariable(
+      "ECMWF/ERA5/DAILY",
+      ["u_component_of_wind_50m"],
+      "mean",
+      "90"
+    ),
+    computeVariable(
+      "ECMWF/ERA5/DAILY",
+      ["v_component_of_wind_50m"],
+      "mean",
+      "30"
+    ),
+    computeVariable(
+      "ECMWF/ERA5/DAILY",
+      ["v_component_of_wind_50m"],
+      "mean",
+      "60"
+    ),
+    computeVariable(
+      "ECMWF/ERA5/DAILY",
+      ["v_component_of_wind_50m"],
+      "mean",
+      "90"
+    ),
+    // Soil Moisture
     computeVariable("NASA/SMAP/SPL4SMGP/007", ["sm_surface"], "mean", "30"),
     computeVariable("NASA/SMAP/SPL4SMGP/007", ["sm_surface"], "mean", "60"),
     computeVariable("NASA/SMAP/SPL4SMGP/007", ["sm_surface"], "mean", "90"),
-    // Add the sand content layers (static data)
+    // Add the static data
+    elevation,
+    landcover,
+    // Add the sand content layers
     sandContent0_5,
     sandContent5_15,
     sandContent15_30,
+    // Add TBP data
+    tbp30,
+    tbp60,
+    tbp90,
     // Add AET data
     aet30,
     aet60,
@@ -308,9 +435,10 @@ function extractTimeLaggedData(point) {
   var combinedImage = ee.Image.cat(images);
   combinedImage = calculateTCI(combinedImage);
   combinedImage = calculateVHI(combinedImage);
+  combinedImage = calculateTVDI(combinedImage, geometry);
 
   // Create 7x7x2 locust report image
-  var locustReportImage = createLocustReportImage(point, date, 20000); // 20km resolution
+  var locustReportImage = createLocustReportImage(point, date, 250); // 250m resolution
 
   // Combine all data
   return ee.Image.cat([combinedImage, locustReportImage]);
@@ -321,24 +449,53 @@ function createExportTask(featureIndex, feature) {
   // Get the observation date as a string
   var obsDateStr = feature.get("Obs Date");
 
-  // Parse the date manually using client-side JavaScript
-  var obsDateClient = ee.String(obsDateStr).getInfo();
+  var obsDate;
+  var formattedDate;
+  var obsDateClient = null;
 
   try {
-    // Parse MM/DD/YYYY format
-    var dateParts = obsDateClient.split(" ")[0].split("/");
-    var month = dateParts[0];
-    var day = dateParts[1];
-    var year = dateParts[2];
-    var formattedDate = year + "-" + month + "-" + day;
-    // Create a server-side date from the formatted string
-    var obsDate = ee.Date(formattedDate);
-    print("ObsDate", obsDate);
+    // Convert to JavaScript string properly
+
+    if (obsDateStr) {
+      obsDateClient = String(obsDateStr.getInfo()); // Explicitly convert to JS String
+    }
+
+    // Check if we have a valid date string
+    if (obsDateClient && obsDateClient.indexOf("/") !== -1) {
+      // Use indexOf instead of includes
+      // Try MM/DD/YYYY format
+      var dateParts = obsDateClient.split(" ")[0].split("/");
+
+      // Check if we have enough parts and its after the year 2000
+      if (dateParts.length >= 3 && dateParts[2] > 2000) {
+        var month = dateParts[0];
+        var day = dateParts[1];
+        var year = dateParts[2];
+        // Make sure month and day are two digits
+        month = month.length === 1 ? "0" + month : month;
+        day = day.length === 1 ? "0" + day : day;
+
+        formattedDate = year + "-" + month + "-" + day;
+        obsDate = ee.Date(formattedDate);
+        print("Parsed date:", formattedDate);
+      } else {
+        throw new Error(
+          "Invalid date format: not enough parts after splitting"
+        );
+      }
+    } else {
+      throw new Error("Invalid or empty date format");
+    }
   } catch (e) {
-    console.log("Error parsing date:", e);
+    console.error("Error parsing date:", e);
     // Use current date as fallback
-    var obsDate = ee.Date(Date.now());
-    var formattedDate = new Date().toISOString().split("T")[0];
+    var now = new Date();
+    var year = now.getFullYear();
+    var month = String(now.getMonth() + 1).padStart(2, "0");
+    var day = String(now.getDate()).padStart(2, "0");
+    formattedDate = year + "-" + month + "-" + day;
+    obsDate = ee.Date(formattedDate);
+    print("Using fallback date:", formattedDate);
   }
 
   // Get the locust presence value
@@ -380,9 +537,20 @@ function createExportTask(featureIndex, feature) {
 }
 
 // Load FAO locust data
-var faoReportAssetId =
-  "projects/desert-locust-forcast/assets/ET_FAO_archival_data";
+var faoReportAssetId = "projects/desert-locust-forcast/assets/FAO_ALL_Reports";
 var locustData = ee.FeatureCollection(faoReportAssetId);
+
+// var locustDataWithGeometry = locustData.map(function(feature) {
+//   // Get x and y coordinates from properties
+//   var lon = ee.Number.parse(feature.get('x'));
+//   var lat = ee.Number.parse(feature.get('y'));
+
+//   // Create a point geometry from these coordinates
+//   var point = ee.Geometry.Point([lon, lat]);
+
+//   // Return a new feature with this geometry and all original properties
+//   return feature.setGeometry(point);
+// });
 
 var presencePoints = locustData.filter(
   ee.Filter.eq("Locust Presence", "PRESENT")
@@ -396,12 +564,16 @@ print("Presence points sample:", presencePoints.size());
 print("Absence points sample:", absencePoints.size());
 
 // Get a single presence point for testing
-var singlePoint = presencePoints.first();
+var singlePoint = presencePoints.filter(ee.Filter.eq("index", 0));
 print("Single test point:", singlePoint);
 
 // Process this single point
 Map.centerObject(aoi, 6);
-Map.addLayer(singlePoint.geometry(), { color: "red" }, "Locust presence point");
+Map.addLayer(
+  singlePoint.geometry(),
+  { color: "red", radius: 10 },
+  "Locust presence point"
+);
 
 // Manually call the export task function for testing
 createExportTask(0, singlePoint);
