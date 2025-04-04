@@ -11,3 +11,4 @@ __pycache__/
 *.pyd
 *.pyw
 *.pyz
+locust_export_progress.json
