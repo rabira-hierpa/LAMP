@@ -54,12 +54,18 @@ def read_large_csv(file_path, required_columns):
     print("Date formatting example:")
     print(df[['Obs Date', 'formatted_date']].head())
 
+    # Filter out rows where year is less than 2015
+    df = df[df['Year'] >= 2015]
+
     # Sort by formatted_date
     df = df.sort_values(by='formatted_date', ascending=True)
 
-    # If 'index' is not in required columns, add it
-    if 'index' not in required_columns:
-        df['index'] = df.index
+    # Add a new column with 0 based index from the row that starts with 2015
+    df = df.reset_index(drop=True)  # Reset index to be zero-based
+    df['index'] = df.index  # Add the zero-based index as a column
+
+    print(f"Added zero-based 'index' column to dataframe")
+    print(f"Index range: 0 to {len(df)-1}")
 
     end_time = time.time()
     print(f"Time taken: {end_time - start_time:.2f} seconds")
@@ -75,7 +81,7 @@ if __name__ == "__main__":
 
     # Columns to extract from the FAO locust report
     required_columns = ['OBJECTID', 'Obs Date', 'Year', 'Locust Presence',
-                        'Latitude', 'Longitude']
+                        'Latitude', 'Longitude', 'Country']
 
     # Read the required columns
     df = read_large_csv(file_path, required_columns)

@@ -61,8 +61,8 @@ def process_single_feature(filtered_data: ee.FeatureCollection,
         else:
             # Use direct pagination - sort by a property then take the idx-th element
             # Earth Engine doesn't support direct skip/limit, so we need to sort and take
-            feature_collection = filtered_data.sort(
-                'system:index').limit(1, ee.Number(idx).format("d"))
+            feature_collection = filtered_data.filter(
+                ee.Filter.eq('index', idx)).limit(1)
 
         # Check if any features were found
         count = feature_collection.size().getInfo()
@@ -96,7 +96,7 @@ def process_in_test_mode(filtered_data: ee.FeatureCollection,
         filtered_data: FeatureCollection to process
         args: Command-line arguments
     """
-    logging.info(f"--- Running in Test Mode (Index: {args.start_index}) ---")
+    logging.info(f"--- 🧪 Running in Test Mode (Index: {args.start_index}) ---")
     try:
         single_point_collection = filtered_data.limit(1)
 
@@ -104,22 +104,22 @@ def process_in_test_mode(filtered_data: ee.FeatureCollection,
         single_point_count = single_point_collection.size()
         if single_point_count == 0:
             logging.error(
-                f"Test mode: No feature found at position {args.start_index}. The collection may be smaller than expected.")
+                f"❌ Test mode: No feature found at position {args.start_index}. The collection may be smaller than expected.")
             return
 
         # Get the first (and only) feature
         single_point = ee.Feature(single_point_collection.first())
         logging.info(
-            f"Test mode: Processing feature at position {args.start_index}")
+            f"🔍 Test mode: Processing feature at position {args.start_index}")
 
-        logging.info(f"Creating test export task...")
+        logging.info(f"🔧 Creating test export task...")
         task_tuple = create_test_export_task(args.start_index, single_point)
 
         if task_tuple:
             task, description = task_tuple
-            logging.info(f"Starting test export task...")
+            logging.info(f"▶️ Starting test export task...")
             start_export_task(task, description)
-            logging.info(f'Test export task started: {description}')
+            logging.info(f'🚀 Test export task started: {description}')
 
             # Wait for the task to complete or fail
             logging.info(f"Monitoring task status...")
@@ -177,7 +177,7 @@ def process_in_batch_mode(filtered_data: ee.FeatureCollection,
         initial_failed: Initial count of failed tasks
         initial_skipped: Initial count of skipped tasks
     """
-    logging.info(f"--- Running in Batch Mode ---")
+    logging.info(f"--- 🚀 Running in Batch Mode ---")
 
     # Check if collection has index property
     has_index = False
@@ -190,12 +190,12 @@ def process_in_batch_mode(filtered_data: ee.FeatureCollection,
             if first_feature.get('index') is not None:
                 has_index = True
                 logging.info(
-                    "Collection has 'index' property, using it for filtering.")
+                    "✅ Collection has 'index' property, using it for filtering.")
         else:
             logging.warning(
-                "Collection is empty - cannot check for index property")
+                "⚠️ Collection is empty - cannot check for index property")
     except Exception as e:
-        logging.info(f"Error checking for 'index' property: {str(e)}")
+        logging.info(f"⚠️ Error checking for 'index' property: {str(e)}")
 
     # Initialize task manager for batch processing
     task_manager = TaskManager(
@@ -225,7 +225,7 @@ def process_in_batch_mode(filtered_data: ee.FeatureCollection,
         # For balanced sampling between presence and absence (optional)
         if args.balanced_sampling and not (args.presence_only or args.absence_only):
             logging.info(
-                "Using balanced sampling between presence and absence points")
+                "⚖️ Using balanced sampling between presence and absence points")
             # This requires separately filtering presence and absence points
             presence_data = filtered_data.filter(
                 ee.Filter.eq('Locust Presence', 'PRESENT'))
@@ -236,7 +236,7 @@ def process_in_batch_mode(filtered_data: ee.FeatureCollection,
             absence_count = absence_data.size().getInfo()
 
             logging.info(
-                f"Found {presence_count} presence points and {absence_count} absence points")
+                f"📊 Found {presence_count} presence points and {absence_count} absence points")
 
             # Process equal numbers from each category
             max_balanced_count = min(presence_count, absence_count)
@@ -350,14 +350,14 @@ def process_in_batch_mode(filtered_data: ee.FeatureCollection,
 
         # Wait for all tasks to complete
         logging.info(
-            "All features submitted to queue. Waiting for tasks to complete...")
+            "⏳ All features submitted to queue. Waiting for tasks to complete...")
         final_completed, final_failed, final_skipped = task_manager.wait_until_complete()
 
         logging.info(
-            f"Batch processing completed: {final_completed} successful, {final_failed} failed, {final_skipped} skipped")
+            f"🏁 Batch processing completed: ✅ {final_completed} successful, ❌ {final_failed} failed, ⏭️ {final_skipped} skipped")
 
     except KeyboardInterrupt:
-        logging.info("Interrupted by user. Saving progress...")
+        logging.info("⚠️ Interrupted by user. Saving progress...")
         # Save progress immediately on interrupt
         save_progress(
             args.progress_file,
@@ -367,14 +367,14 @@ def process_in_batch_mode(filtered_data: ee.FeatureCollection,
             task_manager.skipped_count
         )
     except Exception as e:
-        logging.error(f"Error in main batch processing loop: {str(e)}")
+        logging.error(f"❌ Error in main batch processing loop: {str(e)}")
     finally:
         # Shutdown task manager
-        logging.info("Shutting down task manager...")
+        logging.info("🛑 Shutting down task manager...")
         task_manager.shutdown()
 
         # Save final progress
-        logging.info("Saving final progress...")
+        logging.info("💾 Saving final progress...")
         save_progress(
             args.progress_file,
             list(processed_indices),
@@ -383,7 +383,7 @@ def process_in_batch_mode(filtered_data: ee.FeatureCollection,
             task_manager.skipped_count
         )
 
-        logging.info("Script completed. Final progress saved.")
+        logging.info("✨ Script completed. Final progress saved.")
 
 
 def debug_collection(collection, description="Collection", limit=3):
@@ -472,6 +472,11 @@ def main():
                         help='File to save/load progress')
     parser.add_argument('--log-file', type=str, default=DEFAULT_LOG_FILE,
                         help='Log file name')
+    # Add country filter and dry run options
+    parser.add_argument('--country', type=str, default=None,
+                        help='Filter data by country name (e.g., "Ethiopia")')
+    parser.add_argument('--dry-run', action='store_true',
+                        help='Simulate processing without creating actual export tasks')
     args = parser.parse_args()
 
     # Set up logging
@@ -537,6 +542,14 @@ def main():
     else:
         filtered_data = locust_data  # Use the collection with geometry
 
+    # Filter by country if specified
+    if args.country is not None:
+        logging.info(f"Filtering data for country: {args.country}")
+        filtered_data = filtered_data.filter(
+            ee.Filter.eq('Country', args.country))
+        logging.info(
+            f"Features after country filter: {filtered_data.size().getInfo()}")
+
     # Get final count of features to process
     feature_count = filtered_data.size().getInfo()
     logging.info(
@@ -566,6 +579,27 @@ def main():
             f"Processing {presence_count} presence points and {absence_count} absence points")
     except Exception as e:
         logging.warning(f"Could not count presence/absence points: {e}")
+
+    # Handle dry run mode
+    if args.dry_run:
+        logging.info(
+            "🔍 DRY RUN MODE ENABLED - No actual exports will be performed")
+        if args.test:
+            logging.info(
+                f"🧪 Would run test mode on feature at index {args.start_index}")
+        else:
+            logging.info(
+                f"📊 Would process {feature_count} features from index {args.start_index}")
+            if args.presence_only:
+                logging.info(f"🟢 Would only process presence points")
+            elif args.absence_only:
+                logging.info(f"🔴 Would only process absence points")
+            if args.balanced_sampling:
+                logging.info(
+                    f"⚖️ Would use balanced sampling between presence and absence points")
+            if args.country:
+                logging.info(f"🗺️ Would filter for country: {args.country}")
+        return
 
     # Test mode - process a single point
     if args.test:
