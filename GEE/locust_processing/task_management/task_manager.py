@@ -153,29 +153,40 @@ class TaskManager:
                         if task_id in self.active_tasks:
                             del self.active_tasks[task_id]
 
-                # Start new tasks if there's room
+                # Start new tasks in batch
                 with self.lock:
                     active_count = len(self.active_tasks)
+                    room_for_tasks = self.max_concurrent - active_count
 
-                while active_count < self.max_concurrent and not self.task_queue.empty():
-                    try:
-                        task, description, attempts = self.task_queue.get(
-                            block=False)
-                        self._start_task(task, description, attempts)
-                        active_count += 1
-                    except Exception as e:
-                        if not isinstance(e, Exception):
+                # Add new tasks in larger batches
+                if room_for_tasks > 0:
+                    # Start multiple tasks (up to 20) in quick succession
+                    batch_size = min(room_for_tasks, 20)
+                    tasks_added = 0
+
+                    for _ in range(batch_size):
+                        if self.task_queue.empty():
+                            break
+
+                        try:
+                            task, description, attempts = self.task_queue.get(
+                                block=False)
+                            self._start_task(task, description, attempts)
+                            tasks_added += 1
+                        except Exception as e:
                             logging.error(f"Error starting new task: {str(e)}")
-                        break
 
-                # Print status every minute
-                with self.lock:
-                    logging.info(f"Status: {len(self.active_tasks)} active, {self.task_queue.qsize()} queued, "
-                                 f"{self.completed_count} completed, {self.failed_count} failed, {self.skipped_count} skipped, "
-                                 f"{self.total_count} total")
+                    if tasks_added > 0:
+                        logging.info(
+                            f"Started {tasks_added} new tasks in batch")
 
-                # Sleep to avoid busy waiting
-                time.sleep(60)
+                    # Small sleep before starting next batch of tasks to avoid rate limits
+                    if tasks_added > 0 and not self.task_queue.empty():
+                        # Just a small pause to avoid hitting rate limits
+                        time.sleep(1)
+
+                # Sleep shorter times between monitoring cycles
+                time.sleep(15)  # Check twice as often
 
             except Exception as e:
                 logging.error(f"Error in task monitor: {str(e)}")

@@ -61,8 +61,8 @@ def process_single_feature(filtered_data: ee.FeatureCollection,
         else:
             # Use direct pagination - sort by a property then take the idx-th element
             # Earth Engine doesn't support direct skip/limit, so we need to sort and take
-            feature_collection = filtered_data.sort(
-                'system:index').limit(1, ee.Number(idx).format("d"))
+            feature_collection = filtered_data.filter(
+                ee.Filter.eq('index', idx)).limit(1)
 
         # Check if any features were found
         count = feature_collection.size().getInfo()

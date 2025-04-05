@@ -540,18 +540,6 @@ function createExportTask(featureIndex, feature) {
 var faoReportAssetId = "projects/desert-locust-forcast/assets/FAO_ALL_Reports";
 var locustData = ee.FeatureCollection(faoReportAssetId);
 
-// var locustDataWithGeometry = locustData.map(function(feature) {
-//   // Get x and y coordinates from properties
-//   var lon = ee.Number.parse(feature.get('x'));
-//   var lat = ee.Number.parse(feature.get('y'));
-
-//   // Create a point geometry from these coordinates
-//   var point = ee.Geometry.Point([lon, lat]);
-
-//   // Return a new feature with this geometry and all original properties
-//   return feature.setGeometry(point);
-// });
-
 var presencePoints = locustData.filter(
   ee.Filter.eq("Locust Presence", "PRESENT")
 );
