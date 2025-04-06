@@ -1,4 +1,4 @@
-# LAMP - Locust Activity and Movement Prediction
+# Locust Activity and Movement Prediction
 
 A modular package for processing and exporting locust data from Google Earth Engine.
 
@@ -41,6 +41,45 @@ GEE/locust_processing/
 - **Visual Feedback**: Emoji-based visual feedback in logs for easier interpretation
 - **Country Filtering**: Filter data by country name
 - **Dry Run Mode**: Simulate processing without creating actual export tasks
+
+The script generates multi-band images inspired by the PLAN (Predictor of Locust Activity and movemeNt) methodology from Tabar et al. (2021). Each image contains approximately **60 bands** representing:
+
+**Vegetation indices at different time lags (30, 60, 90 days):**
+
+- NDVI (Normalized Difference Vegetation Index)
+
+* EVI (Enhanced Vegetation Index)
+
+* VHI (Vegetation Health Index)
+
+**Moisture indicators:**
+
+- NDWI (Normalized Difference Water Index)
+- Soil moisture from SMAP
+
+* Precipitation from CHIRPS
+
+**Temperature data:**
+
+- LST (Land Surface Temperature)
+
+- TCI (Temperature Condition Index)
+
+- TVDI (Temperature Vegetation Dryness Index)
+
+**Wind components (u and v)**
+
+**Contextual data:**
+
+- 7×7 grid of locust presence/absence counts
+
+**Static environmental variables**:
+
+- Elevation, slope, aspect
+
+- Land cover
+
+- Soil texture
 
 ## Installation
 

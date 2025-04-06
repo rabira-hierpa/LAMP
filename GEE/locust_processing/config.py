@@ -5,7 +5,7 @@ Configuration settings for the locust processing package.
 import os
 
 # Earth Engine dataset paths
-FAO_REPORT_ASSET_ID = 'projects/desert-locust-forcast/assets/FAO_archival_data_extracted_2015'
+FAO_REPORT_ASSET_ID = 'projects/desert-locust-forcast/assets/FAO_archvial_data_extracted_2015'
 BOUNDARIES_DATASET = "USDOS/LSIB_SIMPLE/2017"
 
 # Export settings
