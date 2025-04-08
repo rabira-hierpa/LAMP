@@ -44,20 +44,14 @@ class TaskManager:
         self.task_monitor.daemon = True
         self.task_monitor.start()
 
-    def add_task(self, task_tuple: Optional[Tuple[Any, str]]) -> None:
+    def add_task(self, task: Any, description: str) -> None:
         """
-        Add a task to the queue.
+        Add a task to the queue and try to start it immediately if possible.
 
         Args:
-            task_tuple: Tuple of (task, description), or None if task should be skipped
+            task: The task to add
+            description: Description of the task
         """
-        if task_tuple is None:
-            with self.lock:
-                self.skipped_count += 1
-                self.total_count += 1
-            return
-
-        task, description = task_tuple
         with self.lock:
             self.total_count += 1
 
@@ -65,33 +59,100 @@ class TaskManager:
         self.task_queue.put((task, description, 0))
         logging.info(f"➕ Added task to queue: {description}")
 
-    def _start_task(self, task: Any, description: str, attempts: int) -> None:
+        # Try to start the task immediately if we have room
+        self.batch_start_tasks()
+
+    def add_tasks_batch(self, task_tuples: List[Tuple[Any, str]]) -> int:
         """
-        Start a task and add it to active tasks.
+        Add multiple tasks to the queue at once and try to start them immediately.
 
         Args:
-            task: Task to start
-            description: Task description
-            attempts: Number of previous attempts
+            task_tuples: List of (task, description) tuples
         """
-        task_id = f"{description}_{attempts}"
         with self.lock:
-            if task_id in self.active_tasks:
-                logging.warning(f"⚠️ Task {task_id} already in active tasks!")
-                return
+            self.total_count += len(task_tuples)
 
-            self.active_tasks[task_id] = (task, description, attempts)
+        # Add all tasks to the queue
+        count = 0
+        for task, description in task_tuples:
+            # (task, description, attempts)
+            self.task_queue.put((task, description, 0))
+            count += 1
 
-        try:
-            task.start()
-            logging.info(
-                f"▶️ Started task: {description} (attempt {attempts+1})")
-        except Exception as e:
-            logging.error(f"❌ Error starting task {description}: {str(e)}")
+        logging.info(f"➕ Added {count} tasks to queue in batch")
+
+        # Try to start as many tasks as possible immediately
+        self.batch_start_tasks()
+
+        return count
+
+    def batch_start_tasks(self, max_to_start: int = None) -> int:
+        """
+        Start multiple tasks from the queue in a single batch.
+
+        Args:
+            max_to_start: Maximum number of tasks to start in this batch. If None, uses max_concurrent.
+
+        Returns:
+            int: Number of tasks actually started
+        """
+        tasks_started = 0
+        tasks_to_start = []
+
+        # Get tasks from queue (up to max_to_start)
+        with self.lock:
+            active_count = len(self.active_tasks)
+            room_for_tasks = self.max_concurrent - active_count
+            if max_to_start is not None:
+                room_for_tasks = min(room_for_tasks, max_to_start)
+
+            # If no room for tasks, return early
+            if room_for_tasks <= 0:
+                logging.debug(
+                    f"No room for new tasks (active: {active_count}/{self.max_concurrent})")
+                return 0
+
+            # Get tasks from queue
+            for _ in range(room_for_tasks):
+                if self.task_queue.empty():
+                    break
+                try:
+                    task_tuple = self.task_queue.get(block=False)
+                    tasks_to_start.append(task_tuple)
+                except Exception as e:
+                    logging.debug(f"Error getting task from queue: {str(e)}")
+                    break
+
+        # Start tasks outside the lock to avoid holding it for too long
+        for task, description, attempts in tasks_to_start:
+            task_id = f"{description}_{attempts}"
+
+            # Add to active tasks
             with self.lock:
-                self.failed_count += 1
                 if task_id in self.active_tasks:
-                    del self.active_tasks[task_id]
+                    logging.warning(
+                        f"⚠️ Task {task_id} already in active tasks!")
+                    continue
+                self.active_tasks[task_id] = (task, description, attempts)
+
+            # Start the task
+            try:
+                task.start()
+                tasks_started += 1
+                logging.info(
+                    f"▶️ Started task: {description} (attempt {attempts+1})")
+            except Exception as e:
+                logging.error(f"❌ Error starting task {description}: {str(e)}")
+                with self.lock:
+                    self.failed_count += 1
+                    if task_id in self.active_tasks:
+                        del self.active_tasks[task_id]
+
+        if tasks_started > 0:
+            logging.info(
+                f"🚀 Started {tasks_started} tasks in batch (active: {len(self.active_tasks)}/{self.max_concurrent})")
+
+        return tasks_started
 
     def _monitor_tasks(self) -> None:
         """Monitor running tasks and start new ones as needed."""
@@ -110,17 +171,18 @@ class TaskManager:
                         task, description, attempts = self.active_tasks[task_id]
 
                     try:
-                        status = task.status()
-                        state = status['state']
-
+                        state = task.status()['state']
                         if state == 'COMPLETED':
                             logging.info(f"✅ Task completed: {description}")
                             with self.lock:
                                 self.completed_count += 1
+                                self.completed_descriptions.append(description)
                                 task_ids_to_remove.append(task_id)
+
                         elif state == 'FAILED':
+                            error_msg = task.status().get('error_message', 'Unknown error')
                             logging.warning(
-                                f"❌ Task failed: {description} - {status.get('error_message', 'Unknown error')}")
+                                f"❌ Task failed: {description} - {error_msg}")
                             with self.lock:
                                 task_ids_to_remove.append(task_id)
 
@@ -155,56 +217,45 @@ class TaskManager:
                         if task_id in self.active_tasks:
                             del self.active_tasks[task_id]
 
-                # Start new tasks in batch
+                # Calculate available slots and queue size
                 with self.lock:
                     active_count = len(self.active_tasks)
-                    room_for_tasks = self.max_concurrent - active_count
+                    available_slots = self.max_concurrent - active_count
+                    queue_size = self.task_queue.qsize()
 
-                # Add new tasks in larger batches
-                if room_for_tasks > 0:
-                    # Start multiple tasks (up to 20) in quick succession
-                    batch_size = min(room_for_tasks, 20)
-                    tasks_added = 0
+                # Start as many tasks as possible, up to max_concurrent
+                if available_slots > 0 and queue_size > 0:
+                    # Use the full available slots to start tasks
+                    batch_size = min(available_slots, queue_size)
+                    logging.info(
+                        f"Starting up to {batch_size} new tasks (active: {active_count}, available: {available_slots}, queued: {queue_size})")
+                    started = self.batch_start_tasks()
 
-                    for _ in range(batch_size):
-                        if self.task_queue.empty():
-                            break
+                    # If we started tasks and there are more in the queue and still room, start another batch immediately
+                    if started > 0 and not self.task_queue.empty() and (len(self.active_tasks) < self.max_concurrent):
+                        continue
 
-                        try:
-                            task, description, attempts = self.task_queue.get(
-                                block=False)
-                            self._start_task(task, description, attempts)
-                            tasks_added += 1
-                        except Exception as e:
-                            logging.error(f"Error starting new task: {str(e)}")
-
-                    if tasks_added > 0:
-                        logging.info(
-                            f"🚀 Started {tasks_added} new tasks in batch")
-
-                    # Small sleep before starting next batch of tasks to avoid rate limits
-                    if tasks_added > 0 and not self.task_queue.empty():
-                        # Just a small pause to avoid hitting rate limits
-                        time.sleep(1)
-
-                # Print status every minute
+                # Print status every cycle
                 with self.lock:
                     completion_percentage = 0
                     if self.total_count > 0:
                         completion_percentage = (
                             self.completed_count / self.total_count) * 100
 
-                    logging.info(f"📊 Status: {len(self.active_tasks)} active, {self.task_queue.qsize()} queued, "
+                    queue_size = self.task_queue.qsize()
+                    active_count = len(self.active_tasks)
+
+                    logging.info(f"📊 Status: {active_count}/{self.max_concurrent} active, {queue_size} queued, "
                                  f"{self.completed_count} completed ({completion_percentage:.1f}%), "
                                  f"{self.failed_count} failed, {self.skipped_count} skipped, "
                                  f"{self.total_count} total")
 
-                # Sleep shorter times between monitoring cycles
-                time.sleep(15)  # Check twice as often
+                # Small sleep to avoid busy waiting
+                time.sleep(0.1)
 
             except Exception as e:
-                logging.error(f"💥 Error in task monitor: {str(e)}")
-                time.sleep(10)  # Sleep a bit before retrying
+                logging.error(f"💥Error in task monitor: {str(e)}")
+                time.sleep(1)  # Sleep a bit before retrying
 
     def wait_until_complete(self) -> Tuple[int, int, int]:
         """
@@ -226,3 +277,12 @@ class TaskManager:
         logging.info("🛑 Shutting down task manager...")
         if self.task_monitor.is_alive():
             self.task_monitor.join(timeout=60)
+
+    def increment_skipped(self) -> None:
+        """
+        Increment the skipped count in a thread-safe manner.
+        """
+        with self.lock:
+            self.skipped_count += 1
+            self.total_count += 1
+            logging.info(f"Skipped count: {self.skipped_count}")
