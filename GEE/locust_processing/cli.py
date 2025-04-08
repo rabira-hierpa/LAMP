@@ -33,7 +33,9 @@ from .config import (
 def process_single_feature(filtered_data: ee.FeatureCollection,
                            object_id: int,
                            processed_object_ids: Set[int],
-                           task_manager: TaskManager) -> bool:
+                           task_manager: TaskManager,
+                           country: str = None,
+                           dry_run: bool = False) -> bool:
     """
     Process a single feature by OBJECTID.
 
@@ -42,6 +44,8 @@ def process_single_feature(filtered_data: ee.FeatureCollection,
         object_id: OBJECTID of the feature to process
         processed_object_ids: Set of already processed OBJECTIDs
         task_manager: TaskManager instance for task handling
+        country: Optional country name to use in export folder
+        dry_run: If True, simulate task creation without actually creating it
 
     Returns:
         bool: True if the feature was queued successfully, False otherwise
@@ -68,7 +72,8 @@ def process_single_feature(filtered_data: ee.FeatureCollection,
         feature_to_process = ee.Feature(feature_collection.first())
         # Create the export task
         try:
-            task_tuple = create_export_task(object_id, feature_to_process)
+            task_tuple = create_export_task(
+                object_id, feature_to_process, country, dry_run)
             if task_tuple is None:
                 logging.error(
                     f"🚫 Could not create export task for feature with OBJECTID {object_id}")
@@ -77,7 +82,8 @@ def process_single_feature(filtered_data: ee.FeatureCollection,
 
             # Add to task manager
             task, description = task_tuple
-            task_manager.add_task(task, description)
+            if not dry_run:
+                task_manager.add_task(task, description)
 
             # Add to processed OBJECTIDs
             processed_object_ids.add(object_id)
@@ -106,7 +112,9 @@ def process_features_parallel(filtered_data: ee.FeatureCollection,
                               object_ids: List[int],
                               processed_object_ids: Set[int],
                               task_manager: TaskManager,
-                              batch_size: int = 50) -> None:
+                              batch_size: int = 50,
+                              country: str = None,
+                              dry_run: bool = False) -> None:
     """
     Process features in parallel batches.
 
@@ -116,6 +124,8 @@ def process_features_parallel(filtered_data: ee.FeatureCollection,
         processed_object_ids: Set of already processed OBJECTIDs
         task_manager: TaskManager instance for task handling
         batch_size: Number of features to process in each batch
+        country: Optional country name to use in export folder
+        dry_run: If True, simulate task creation without actually creating it
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
     import time
@@ -144,7 +154,7 @@ def process_features_parallel(filtered_data: ee.FeatureCollection,
         with ThreadPoolExecutor(max_workers=min(batch_size, 10)) as executor:
             # Submit all tasks in the batch
             future_to_oid = {
-                executor.submit(process_single_feature, filtered_data, oid, processed_object_ids, task_manager): oid
+                executor.submit(process_single_feature, filtered_data, oid, processed_object_ids, task_manager, country, dry_run): oid
                 for oid in batch_object_ids
             }
 
@@ -325,7 +335,7 @@ def process_in_batch_mode(filtered_data: ee.FeatureCollection,
                 logging.info(
                     f"Processing {len(presence_object_ids)} presence points in parallel")
                 process_features_parallel(
-                    presence_data, presence_object_ids, processed_object_ids, task_manager, args.batch_size)
+                    presence_data, presence_object_ids, processed_object_ids, task_manager, args.batch_size, args.country, args.dry_run)
 
             # Process absence points in parallel
             if absence_object_ids:
@@ -334,12 +344,12 @@ def process_in_batch_mode(filtered_data: ee.FeatureCollection,
                 logging.info(
                     f"Processing {len(absence_object_ids)} absence points in parallel")
                 process_features_parallel(
-                    absence_data, absence_object_ids, processed_object_ids, task_manager, args.batch_size)
+                    absence_data, absence_object_ids, processed_object_ids, task_manager, args.batch_size, args.country, args.dry_run)
 
         else:
             # Process all features in parallel
             process_features_parallel(
-                filtered_data, object_ids, processed_object_ids, task_manager, args.batch_size)
+                filtered_data, object_ids, processed_object_ids, task_manager, args.batch_size, args.country, args.dry_run)
 
         # Wait for all tasks to complete
         logging.info(
@@ -413,7 +423,7 @@ def main():
     parser.add_argument('--country', type=str, default=None,
                         help='Filter data by country name (e.g., "Ethiopia")')
     parser.add_argument('--dry-run', action='store_true',
-                        help='Simulate processing without creating actual export tasks')
+                        help='Run in dry-run mode (no actual exports will be created)')
     args = parser.parse_args()
 
     # Set up logging
