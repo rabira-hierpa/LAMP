@@ -12,3 +12,10 @@ __pycache__/
 *.pyw
 *.pyz
 locust_export_progress.json
+
+# GEE
+token.json
+credentials.json
+private-key.json
+GEE/locust_processing/__tests__/test_object_ids.json
+GEE/locust_processing/__tests__/test_progress.json
