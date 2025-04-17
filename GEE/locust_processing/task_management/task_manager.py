@@ -4,11 +4,51 @@ Task management for the locust processing package.
 
 import time
 import logging
+import json
+import os
 from queue import Queue
 from threading import Thread, Lock
-from typing import Dict, List, Optional, Tuple, Any, Callable
+from typing import Dict, List, Optional, Tuple, Any, Callable, Set
 
-from ..config import MAX_CONCURRENT_TASKS, MAX_RETRIES, RETRY_DELAY_SECONDS
+from ..config import MAX_CONCURRENT_TASKS, MAX_RETRIES, RETRY_DELAY_SECONDS, DEFAULT_PROGRESS_FILE
+
+
+def save_progress(progress_file: str,
+                  processed_indices: List[int],
+                  completed_count: int,
+                  failed_count: int,
+                  skipped_count: int) -> None:
+    """
+    Save progress to a JSON file.
+
+    Args:
+        progress_file: Path to the progress file
+        processed_indices: List of OBJECT_IDs that have been processed
+        completed_count: Number of completed tasks
+        failed_count: Number of failed tasks
+        skipped_count: Number of skipped tasks
+    """
+    if not progress_file:
+        return
+
+    progress_data = {
+        "processed_indices": processed_indices,
+        "completed_count": completed_count,
+        "failed_count": failed_count,
+        "skipped_count": skipped_count,
+        "timestamp": datetime.datetime.now().isoformat() if 'datetime' in globals() else time.time()
+    }
+
+    # Create directory if it doesn't exist
+    os.makedirs(os.path.dirname(progress_file), exist_ok=True)
+
+    # Save progress to file
+    try:
+        with open(progress_file, 'w') as f:
+            json.dump(progress_data, f)
+        logging.info(f"Progress saved to {progress_file}")
+    except Exception as e:
+        logging.error(f"Error saving progress to {progress_file}: {str(e)}")
 
 
 class TaskManager:
@@ -18,7 +58,8 @@ class TaskManager:
 
     def __init__(self, max_concurrent: int = MAX_CONCURRENT_TASKS,
                  max_retries: int = MAX_RETRIES,
-                 retry_delay: int = RETRY_DELAY_SECONDS):
+                 retry_delay: int = RETRY_DELAY_SECONDS,
+                 progress_file: str = DEFAULT_PROGRESS_FILE):
         """
         Initialize the task manager.
 
@@ -26,57 +67,78 @@ class TaskManager:
             max_concurrent: Maximum number of concurrent tasks
             max_retries: Maximum number of retry attempts for failed tasks
             retry_delay: Delay in seconds between retries
+            progress_file: Path to save progress information (if None, progress is not saved)
         """
         self.task_queue = Queue()
-        self.active_tasks = {}  # task_id -> (task, description, attempts)
+        # task_id -> (task, description, attempts, object_id)
+        self.active_tasks = {}
         self.max_concurrent = max_concurrent
         self.max_retries = max_retries
         self.retry_delay = retry_delay
+        self.progress_file = progress_file
         self.lock = Lock()
         self.completed_count = 0
         self.failed_count = 0
         self.skipped_count = 0
         self.total_count = 0
         self.running = True
+        self.completed_descriptions = []  # Track all completed task descriptions
+        self.processed_object_ids = set()  # Track processed OBJECT_IDs
 
         # Start worker threads
         self.task_monitor = Thread(target=self._monitor_tasks)
         self.task_monitor.daemon = True
         self.task_monitor.start()
 
-    def add_task(self, task: Any, description: str) -> None:
+    def add_task(self, task: Any, description: str, object_id: Optional[int] = None) -> None:
         """
         Add a task to the queue and try to start it immediately if possible.
 
         Args:
             task: The task to add
             description: Description of the task
+            object_id: Optional OBJECT_ID associated with this task
         """
         with self.lock:
             self.total_count += 1
+            if object_id is not None:
+                self.processed_object_ids.add(object_id)
 
-        # (task, description, attempts)
-        self.task_queue.put((task, description, 0))
+        # (task, description, attempts, object_id)
+        self.task_queue.put((task, description, 0, object_id))
         logging.info(f"➕ Added task to queue: {description}")
 
         # Try to start the task immediately if we have room
         self.batch_start_tasks()
 
-    def add_tasks_batch(self, task_tuples: List[Tuple[Any, str]]) -> int:
+    def add_tasks_batch(self, task_tuples: List[Tuple[Any, str, Optional[int]]]) -> int:
         """
         Add multiple tasks to the queue at once and try to start them immediately.
 
         Args:
-            task_tuples: List of (task, description) tuples
+            task_tuples: List of (task, description, object_id) tuples
+
+        Returns:
+            int: Number of tasks added
         """
         with self.lock:
             self.total_count += len(task_tuples)
 
         # Add all tasks to the queue
         count = 0
-        for task, description in task_tuples:
-            # (task, description, attempts)
-            self.task_queue.put((task, description, 0))
+        for task_tuple in task_tuples:
+            if len(task_tuple) == 2:
+                task, description = task_tuple
+                object_id = None
+            else:
+                task, description, object_id = task_tuple
+
+            if object_id is not None:
+                with self.lock:
+                    self.processed_object_ids.add(object_id)
+
+            # (task, description, attempts, object_id)
+            self.task_queue.put((task, description, 0, object_id))
             count += 1
 
         logging.info(f"➕ Added {count} tasks to queue in batch")
@@ -124,7 +186,7 @@ class TaskManager:
                     break
 
         # Start tasks outside the lock to avoid holding it for too long
-        for task, description, attempts in tasks_to_start:
+        for task, description, attempts, object_id in tasks_to_start:
             task_id = f"{description}_{attempts}"
 
             # Add to active tasks
@@ -133,7 +195,8 @@ class TaskManager:
                     logging.warning(
                         f"⚠️ Task {task_id} already in active tasks!")
                     continue
-                self.active_tasks[task_id] = (task, description, attempts)
+                self.active_tasks[task_id] = (
+                    task, description, attempts, object_id)
 
             # Start the task
             try:
@@ -168,7 +231,7 @@ class TaskManager:
                     with self.lock:
                         if task_id not in self.active_tasks:
                             continue
-                        task, description, attempts = self.active_tasks[task_id]
+                        task, description, attempts, object_id = self.active_tasks[task_id]
 
                     try:
                         state = task.status()['state']
@@ -178,6 +241,15 @@ class TaskManager:
                                 self.completed_count += 1
                                 self.completed_descriptions.append(description)
                                 task_ids_to_remove.append(task_id)
+
+                            # Save progress after task completion
+                            save_progress(
+                                self.progress_file,
+                                list(self.processed_object_ids),
+                                self.completed_count,
+                                self.failed_count,
+                                self.skipped_count
+                            )
 
                         elif state == 'FAILED':
                             error_msg = task.status().get('error_message', 'Unknown error')
@@ -193,12 +265,20 @@ class TaskManager:
                                 # Wait before retrying
                                 time.sleep(self.retry_delay)
                                 self.task_queue.put(
-                                    (task, description, attempts + 1))
+                                    (task, description, attempts + 1, object_id))
                             else:
                                 logging.error(
                                     f"🛑 Task failed after {self.max_retries} attempts: {description}")
                                 with self.lock:
                                     self.failed_count += 1
+                                    # Also save progress when a task fails permanently
+                                    save_progress(
+                                        self.progress_file,
+                                        list(self.processed_object_ids),
+                                        self.completed_count,
+                                        self.failed_count,
+                                        self.skipped_count
+                                    )
                         elif state in ['CANCELLED', 'CANCEL_REQUESTED']:
                             logging.warning(
                                 f"⚠️ Task cancelled: {description}")
@@ -269,6 +349,16 @@ class TaskManager:
 
         logging.info(
             f"🏁 All tasks completed. Results: ✅ {self.completed_count} completed, ❌ {self.failed_count} failed, ⏭️ {self.skipped_count} skipped")
+
+        # Final save of progress file
+        save_progress(
+            self.progress_file,
+            list(self.processed_object_ids),
+            self.completed_count,
+            self.failed_count,
+            self.skipped_count
+        )
+
         return self.completed_count, self.failed_count, self.skipped_count
 
     def shutdown(self) -> None:
@@ -278,11 +368,25 @@ class TaskManager:
         if self.task_monitor.is_alive():
             self.task_monitor.join(timeout=60)
 
-    def increment_skipped(self) -> None:
+        # Final save of progress file
+        save_progress(
+            self.progress_file,
+            list(self.processed_object_ids),
+            self.completed_count,
+            self.failed_count,
+            self.skipped_count
+        )
+
+    def increment_skipped(self, object_id: Optional[int] = None) -> None:
         """
         Increment the skipped count in a thread-safe manner.
+
+        Args:
+            object_id: Optional OBJECT_ID to mark as processed
         """
         with self.lock:
             self.skipped_count += 1
             self.total_count += 1
+            if object_id is not None:
+                self.processed_object_ids.add(object_id)
             logging.info(f"Skipped count: {self.skipped_count}")

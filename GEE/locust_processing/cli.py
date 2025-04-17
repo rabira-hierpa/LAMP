@@ -35,6 +35,7 @@ def process_single_feature(filtered_data: ee.FeatureCollection,
                            processed_object_ids: Set[int],
                            task_manager: TaskManager,
                            country: str = None,
+                           progress_file: str = None,
                            dry_run: bool = False) -> bool:
     """
     Process a single feature by OBJECTID.
@@ -65,7 +66,7 @@ def process_single_feature(filtered_data: ee.FeatureCollection,
         if count == 0:
             logging.warning(
                 f"🚫 Feature with OBJECTID {object_id} not found. Skipping.")
-            task_manager.increment_skipped()
+            task_manager.increment_skipped(object_id)
             return False
 
         # Get the feature
@@ -77,13 +78,13 @@ def process_single_feature(filtered_data: ee.FeatureCollection,
             if task_tuple is None:
                 logging.error(
                     f"🚫 Could not create export task for feature with OBJECTID {object_id}")
-                task_manager.increment_skipped()
+                task_manager.increment_skipped(object_id)
                 return False
 
             # Add to task manager
             task, description = task_tuple
             if not dry_run:
-                task_manager.add_task(task, description)
+                task_manager.add_task(task, description, object_id)
 
             # Add to processed OBJECTIDs
             processed_object_ids.add(object_id)
@@ -93,18 +94,18 @@ def process_single_feature(filtered_data: ee.FeatureCollection,
         except Exception as e:
             logging.error(
                 f"Error creating/adding task for feature with OBJECTID {object_id}: {str(e)}")
-            task_manager.increment_skipped()
+            task_manager.increment_skipped(object_id)
             return False
 
     except ee.EEException as e:
         logging.error(
             f"Earth Engine error processing feature with OBJECTID {object_id}: {e}")
-        task_manager.increment_skipped()
+        task_manager.increment_skipped(object_id)
         return False
     except Exception as e:
         logging.error(
             f"General error processing feature with OBJECTID {object_id}: {str(e)}")
-        task_manager.increment_skipped()
+        task_manager.increment_skipped(object_id)
         return False
 
 
@@ -114,6 +115,7 @@ def process_features_parallel(filtered_data: ee.FeatureCollection,
                               task_manager: TaskManager,
                               batch_size: int = 50,
                               country: str = None,
+                              progress_file: str = None,
                               dry_run: bool = False) -> None:
     """
     Process features in parallel batches.
@@ -154,7 +156,7 @@ def process_features_parallel(filtered_data: ee.FeatureCollection,
         with ThreadPoolExecutor(max_workers=min(batch_size, 10)) as executor:
             # Submit all tasks in the batch
             future_to_oid = {
-                executor.submit(process_single_feature, filtered_data, oid, processed_object_ids, task_manager, country, dry_run): oid
+                executor.submit(process_single_feature, filtered_data, oid, processed_object_ids, task_manager, country, progress_file, dry_run): oid
                 for oid in batch_object_ids
             }
 
@@ -273,13 +275,18 @@ def process_in_batch_mode(filtered_data: ee.FeatureCollection,
     task_manager = TaskManager(
         max_concurrent=MAX_CONCURRENT_TASKS,
         max_retries=MAX_RETRIES,
-        retry_delay=RETRY_DELAY_SECONDS
+        retry_delay=RETRY_DELAY_SECONDS,
+        progress_file=args.progress_file
     )
 
     # Pass initial loaded counts to task manager
     task_manager.completed_count = initial_completed
     task_manager.failed_count = initial_failed
     task_manager.skipped_count = initial_skipped
+
+    # Initialize processed object IDs
+    for obj_id in processed_object_ids:
+        task_manager.processed_object_ids.add(obj_id)
 
     try:
         # Get all OBJECTIDs from the collection
@@ -335,7 +342,7 @@ def process_in_batch_mode(filtered_data: ee.FeatureCollection,
                 logging.info(
                     f"Processing {len(presence_object_ids)} presence points in parallel")
                 process_features_parallel(
-                    presence_data, presence_object_ids, processed_object_ids, task_manager, args.batch_size, args.country, args.dry_run)
+                    presence_data, presence_object_ids, task_manager.processed_object_ids, task_manager, args.batch_size, args.country, args.progress_file, args.dry_run)
 
             # Process absence points in parallel
             if absence_object_ids:
@@ -344,12 +351,12 @@ def process_in_batch_mode(filtered_data: ee.FeatureCollection,
                 logging.info(
                     f"Processing {len(absence_object_ids)} absence points in parallel")
                 process_features_parallel(
-                    absence_data, absence_object_ids, processed_object_ids, task_manager, args.batch_size, args.country, args.dry_run)
+                    absence_data, absence_object_ids, task_manager.processed_object_ids, task_manager, args.batch_size, args.country, args.dry_run)
 
         else:
             # Process all features in parallel
             process_features_parallel(
-                filtered_data, object_ids, processed_object_ids, task_manager, args.batch_size, args.country, args.dry_run)
+                filtered_data, object_ids, task_manager.processed_object_ids, task_manager, args.batch_size, args.country, args.dry_run)
 
         # Wait for all tasks to complete
         logging.info(
@@ -361,30 +368,13 @@ def process_in_batch_mode(filtered_data: ee.FeatureCollection,
 
     except KeyboardInterrupt:
         logging.info("⚠️ Interrupted by user. Saving progress...")
-        # Save progress immediately on interrupt
-        save_progress(
-            args.progress_file,
-            list(processed_object_ids),
-            task_manager.completed_count,
-            task_manager.failed_count,
-            task_manager.skipped_count
-        )
+        # Tasks will be saved through TaskManager.shutdown()
     except Exception as e:
         logging.error(f"❌ Error in main batch processing loop: {str(e)}")
     finally:
         # Shutdown task manager
         logging.info("🛑 Shutting down task manager...")
         task_manager.shutdown()
-
-        # Save final progress
-        logging.info("💾 Saving final progress...")
-        save_progress(
-            args.progress_file,
-            list(processed_object_ids),
-            task_manager.completed_count,
-            task_manager.failed_count,
-            task_manager.skipped_count
-        )
 
         logging.info("✨ Script completed. Final progress saved.")
 
