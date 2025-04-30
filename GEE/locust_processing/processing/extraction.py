@@ -155,7 +155,7 @@ def compute_ndwi(lag: str, geometry: ee.Geometry, date_range: Dict[str, ee.Date]
 
     try:
         # First try to use MOD09GA
-        collection = ee.ImageCollection("MODIS/006/MOD09GA") \
+        collection = ee.ImageCollection("MODIS/061/MOD09GA") \
             .filterBounds(geometry) \
             .filterDate(date_range[lag], date_range["0"])
 
@@ -369,11 +369,11 @@ def extract_time_lagged_data(point: ee.Feature) -> Optional[ee.Image]:
 
     # Actual Evapotranspiration for each time period
     aet30 = compute_variable(
-        "MODIS/006/MOD16A2", ["ET"], "sum", "30", geometry, date_range)
+        "MODIS/061/MOD16A2", ["ET"], "sum", "30", geometry, date_range)
     aet60 = compute_variable(
-        "MODIS/006/MOD16A2", ["ET"], "sum", "60", geometry, date_range)
+        "MODIS/061/MOD16A2", ["ET"], "sum", "60", geometry, date_range)
     aet90 = compute_variable(
-        "MODIS/006/MOD16A2", ["ET"], "sum", "90", geometry, date_range)
+        "MODIS/061/MOD16A2", ["ET"], "sum", "90", geometry, date_range)
 
     # TerraClimate AET for each time period (as fallback to MODIS AET)
     terra_aet30 = compute_variable(

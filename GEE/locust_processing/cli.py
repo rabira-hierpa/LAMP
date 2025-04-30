@@ -34,9 +34,11 @@ def process_single_feature(filtered_data: ee.FeatureCollection,
                            object_id: int,
                            processed_object_ids: Set[int],
                            task_manager: TaskManager,
+                           total_to_process: int,
                            country: str = None,
                            progress_file: str = None,
-                           dry_run: bool = False) -> bool:
+                           dry_run: bool = False,
+                           ) -> bool:
     """
     Process a single feature by OBJECTID.
 
@@ -45,7 +47,9 @@ def process_single_feature(filtered_data: ee.FeatureCollection,
         object_id: OBJECTID of the feature to process
         processed_object_ids: Set of already processed OBJECTIDs
         task_manager: TaskManager instance for task handling
+        total_to_process: Total number of features to process
         country: Optional country name to use in export folder
+        progress_file: Optional path to the progress file
         dry_run: If True, simulate task creation without actually creating it
 
     Returns:
@@ -57,7 +61,7 @@ def process_single_feature(filtered_data: ee.FeatureCollection,
         return True
 
     try:
-        # Filter by OBJECTID
+        # Filter by OBJECTID from the filtered_data
         feature_collection = filtered_data.filter(
             ee.Filter.eq('OBJECTID', object_id))
 
@@ -84,12 +88,8 @@ def process_single_feature(filtered_data: ee.FeatureCollection,
             # Add to task manager
             task, description = task_tuple
             if not dry_run:
-                task_manager.add_task(task, description, object_id)
-
-            # Add to processed OBJECTIDs
-            processed_object_ids.add(object_id)
-            logging.info(
-                f"Successfully queued feature with OBJECTID {object_id}")
+                task_manager.add_task(
+                    task, description, total_to_process, object_id)
             return True
         except Exception as e:
             logging.error(
@@ -113,10 +113,11 @@ def process_features_parallel(filtered_data: ee.FeatureCollection,
                               object_ids: List[int],
                               processed_object_ids: Set[int],
                               task_manager: TaskManager,
-                              batch_size: int = 50,
+                              batch_size: int = 4,
                               country: str = None,
                               progress_file: str = None,
-                              dry_run: bool = False) -> None:
+                              dry_run: bool = False,
+                              max_features: int = None) -> None:
     """
     Process features in parallel batches.
 
@@ -127,7 +128,9 @@ def process_features_parallel(filtered_data: ee.FeatureCollection,
         task_manager: TaskManager instance for task handling
         batch_size: Number of features to process in each batch
         country: Optional country name to use in export folder
+        progress_file: Optional path to the progress file
         dry_run: If True, simulate task creation without actually creating it
+        max_features: Maximum number of features to process
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
     import time
@@ -135,14 +138,24 @@ def process_features_parallel(filtered_data: ee.FeatureCollection,
     # Filter out already processed OBJECTIDs
     object_ids_to_process = [
         oid for oid in object_ids if oid not in processed_object_ids]
+
+    # Apply max_features limit if specified
+    if max_features is not None and len(object_ids_to_process) > max_features:
+        logging.info(
+            f"⬇︎ Limiting to {max_features} features as requested")
+        object_ids_to_process = object_ids_to_process[:max_features]
+
     total_to_process = len(object_ids_to_process)
+
+    # Update the task manager's total_to_process value
+    task_manager.total_to_process = total_to_process
 
     if total_to_process == 0:
         logging.info("No new features to process")
         return
 
     logging.info(
-        f"Processing {total_to_process} features in parallel batches of {batch_size}")
+        f"🔄 Processing {total_to_process} features in parallel batches of {batch_size}")
 
     # Process in batches to avoid memory issues
     for batch_start in range(0, total_to_process, batch_size):
@@ -156,7 +169,7 @@ def process_features_parallel(filtered_data: ee.FeatureCollection,
         with ThreadPoolExecutor(max_workers=min(batch_size, 10)) as executor:
             # Submit all tasks in the batch
             future_to_oid = {
-                executor.submit(process_single_feature, filtered_data, oid, processed_object_ids, task_manager, country, progress_file, dry_run): oid
+                executor.submit(process_single_feature, filtered_data, oid, processed_object_ids, task_manager, total_to_process, country, progress_file, dry_run): oid
                 for oid in batch_object_ids
             }
 
@@ -288,6 +301,9 @@ def process_in_batch_mode(filtered_data: ee.FeatureCollection,
     for obj_id in processed_object_ids:
         task_manager.processed_object_ids.add(obj_id)
 
+    logging.info(
+        f"Loaded {len(task_manager.processed_object_ids)} processed object IDs from progress file")
+
     try:
         # Get all OBJECTIDs from the collection
         object_ids = filtered_data.aggregate_array('OBJECTID').getInfo()
@@ -298,16 +314,17 @@ def process_in_batch_mode(filtered_data: ee.FeatureCollection,
         # Calculate total based on the range we intend to process
         total_object_ids = len(object_ids)
         if args.max_features:
-            object_ids = object_ids[args.start_index:
-                                    args.start_index + args.max_features]
-        else:
-            object_ids = object_ids[args.start_index:]
+            logging.info(
+                f"User requested to limit processing to {args.max_features} features")
+            total_object_ids = min(total_object_ids, args.max_features)
 
-        task_manager.total_count = len(object_ids)
+        # Set both total_count and total_to_process to ensure consistent reporting
+        task_manager.total_count = total_object_ids
+        task_manager.total_to_process = total_object_ids
 
         # Process in batches to avoid memory issues
         logging.info(
-            f"Starting batch processing with {len(object_ids)} features")
+            f"Starting batch processing with {total_object_ids} features")
 
         # For balanced sampling between presence and absence (optional)
         if args.balanced_sampling and not (args.presence_only or args.absence_only):
@@ -333,12 +350,13 @@ def process_in_batch_mode(filtered_data: ee.FeatureCollection,
             max_balanced_count = min(
                 len(presence_object_ids), len(absence_object_ids))
             if args.max_features:
-                max_balanced_count = min(max_balanced_count, args.max_features)
+                # Half to each category
+                max_balanced_count = min(
+                    max_balanced_count, args.max_features // 2)
 
             # Process presence points in parallel
             if presence_object_ids:
-                presence_object_ids = presence_object_ids[args.start_index:
-                                                          args.start_index + max_balanced_count]
+                presence_object_ids = presence_object_ids[:max_balanced_count]
                 logging.info(
                     f"Processing {len(presence_object_ids)} presence points in parallel")
                 process_features_parallel(
@@ -346,17 +364,17 @@ def process_in_batch_mode(filtered_data: ee.FeatureCollection,
 
             # Process absence points in parallel
             if absence_object_ids:
-                absence_object_ids = absence_object_ids[args.start_index:
-                                                        args.start_index + max_balanced_count]
+                absence_object_ids = absence_object_ids[:max_balanced_count]
                 logging.info(
                     f"Processing {len(absence_object_ids)} absence points in parallel")
                 process_features_parallel(
-                    absence_data, absence_object_ids, task_manager.processed_object_ids, task_manager, args.batch_size, args.country, args.dry_run)
+                    absence_data, absence_object_ids, task_manager.processed_object_ids, task_manager, args.batch_size, args.country, args.progress_file, args.dry_run)
 
         else:
             # Process all features in parallel
             process_features_parallel(
-                filtered_data, object_ids, task_manager.processed_object_ids, task_manager, args.batch_size, args.country, args.dry_run)
+                filtered_data, object_ids, task_manager.processed_object_ids, task_manager,
+                args.batch_size, args.country, args.progress_file, args.dry_run, args.max_features)
 
         # Wait for all tasks to complete
         logging.info(
@@ -388,8 +406,6 @@ def main():
                         help='Run with a single test point')
     parser.add_argument('--batch-size', type=int, default=DEFAULT_BATCH_SIZE,
                         help='Number of features to process in one batch')
-    parser.add_argument('--start-index', type=int, default=0,
-                        help='Index to start processing from')
     parser.add_argument('--max-features', type=int, default=None,
                         help='Maximum number of features to process')
     parser.add_argument('--presence-only', action='store_true',
@@ -421,10 +437,6 @@ def main():
 
     # Initialize Earth Engine
     initialize_ee()
-
-    # Get Ethiopia boundary and set it for index calculations
-    et_boundary = get_ethiopia_boundary()
-    set_region_boundary(et_boundary)
 
     # Create global variables needed for calculation
     logging.info("Loading FAO locust data...")
@@ -490,7 +502,7 @@ def main():
         filtered_data = filtered_data.filter(
             ee.Filter.eq('Country', args.country))
         logging.info(
-            f"Features after country filter: {filtered_data.size().getInfo()}")
+            f"🗺️ Features after country filter: {filtered_data.size().getInfo()}")
 
     # Get final count of features to process
     feature_count = filtered_data.size().getInfo()
@@ -498,13 +510,7 @@ def main():
         f'Total features to process after all filters: {feature_count}')
 
     if feature_count == 0:
-        logging.warning("No features remaining after filtering. Exiting.")
-        return
-
-    # Ensure start_index is valid
-    if args.start_index >= feature_count:
-        logging.error(
-            f"Start index {args.start_index} is out of bounds (total features: {feature_count}). Exiting.")
+        logging.warning("🚫 No features remaining after filtering. Exiting.")
         return
 
     # Load progress if available
@@ -528,10 +534,10 @@ def main():
             "🔍 DRY RUN MODE ENABLED - No actual exports will be performed")
         if args.test:
             logging.info(
-                f"🧪 Would run test mode on feature at index {args.start_index}")
+                f"🧪 Would run test mode on a single point")
         else:
             logging.info(
-                f"📊 Would process {feature_count} features from index {args.start_index}")
+                f"📊 Would process {feature_count} features")
             if args.presence_only:
                 logging.info(f"🟢 Would only process presence points")
             elif args.absence_only:

@@ -576,6 +576,7 @@ class TaskManager:
         self.skipped_count = 0
         self.total_count = 0
         self.running = True
+        self.last_active_count = 0  # Track last active count
 
         # Start worker threads
         self.task_monitor = Thread(target=self._monitor_tasks)
@@ -694,11 +695,14 @@ class TaskManager:
                             logging.error(f"Error starting new task: {str(e)}")
                         break
 
-                # Print status every minute
+                # Print status only when active_count increases by one
                 with self.lock:
-                    logging.info(f"Status: {len(self.active_tasks)} active, {self.task_queue.qsize()} queued, "
-                                 f"{self.completed_count} completed, {self.failed_count} failed, {self.skipped_count} skipped, "
-                                 f"{self.total_count} total")
+                    active_count = len(self.active_tasks)
+                    if active_count > self.last_active_count:
+                        logging.info(f"Status: {active_count} active, {self.task_queue.qsize()} queued, "
+                                     f"{self.completed_count} completed, {self.failed_count} failed, {self.skipped_count} skipped, "
+                                     f"{self.total_count} total")
+                        self.last_active_count = active_count
 
                 # Sleep to avoid busy waiting
                 time.sleep(60)

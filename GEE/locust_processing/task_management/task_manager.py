@@ -10,45 +10,8 @@ from queue import Queue
 from threading import Thread, Lock
 from typing import Dict, List, Optional, Tuple, Any, Callable, Set
 
+from ..data.progress import save_progress
 from ..config import MAX_CONCURRENT_TASKS, MAX_RETRIES, RETRY_DELAY_SECONDS, DEFAULT_PROGRESS_FILE
-
-
-def save_progress(progress_file: str,
-                  processed_indices: List[int],
-                  completed_count: int,
-                  failed_count: int,
-                  skipped_count: int) -> None:
-    """
-    Save progress to a JSON file.
-
-    Args:
-        progress_file: Path to the progress file
-        processed_indices: List of OBJECT_IDs that have been processed
-        completed_count: Number of completed tasks
-        failed_count: Number of failed tasks
-        skipped_count: Number of skipped tasks
-    """
-    if not progress_file:
-        return
-
-    progress_data = {
-        "processed_indices": processed_indices,
-        "completed_count": completed_count,
-        "failed_count": failed_count,
-        "skipped_count": skipped_count,
-        "timestamp": datetime.datetime.now().isoformat() if 'datetime' in globals() else time.time()
-    }
-
-    # Create directory if it doesn't exist
-    os.makedirs(os.path.dirname(progress_file), exist_ok=True)
-
-    # Save progress to file
-    try:
-        with open(progress_file, 'w') as f:
-            json.dump(progress_data, f)
-        logging.info(f"Progress saved to {progress_file}")
-    except Exception as e:
-        logging.error(f"Error saving progress to {progress_file}: {str(e)}")
 
 
 class TaskManager:
@@ -84,32 +47,41 @@ class TaskManager:
         self.running = True
         self.completed_descriptions = []  # Track all completed task descriptions
         self.processed_object_ids = set()  # Track processed OBJECT_IDs
+        self.last_active_count = 0  # Track last active count
+        self.total_to_process = 0
 
         # Start worker threads
         self.task_monitor = Thread(target=self._monitor_tasks)
         self.task_monitor.daemon = True
         self.task_monitor.start()
 
-    def add_task(self, task: Any, description: str, object_id: Optional[int] = None) -> None:
+    def add_task(self, task: Any, description: str, total_to_process: int = None, object_id: Optional[int] = None) -> None:
         """
         Add a task to the queue and try to start it immediately if possible.
 
         Args:
             task: The task to add
             description: Description of the task
+            total_to_process: Total number of tasks to process overall 
             object_id: Optional OBJECT_ID associated with this task
         """
         with self.lock:
             self.total_count += 1
-            if object_id is not None:
-                self.processed_object_ids.add(object_id)
+            if total_to_process:
+                self.total_to_process = total_to_process
+            if object_id in self.processed_object_ids:
+                logging.warning(
+                    f"⚠️ Task with OBJECT_ID {object_id} already processed. Skipping.")
+                self.skipped_count += 1
+                return
+            # Only add it when task is completed, failed, or skipped
 
         # (task, description, attempts, object_id)
         self.task_queue.put((task, description, 0, object_id))
         logging.info(f"➕ Added task to queue: {description}")
 
         # Try to start the task immediately if we have room
-        self.batch_start_tasks()
+        self.batch_start_tasks(total_to_process)
 
     def add_tasks_batch(self, task_tuples: List[Tuple[Any, str, Optional[int]]]) -> int:
         """
@@ -148,11 +120,12 @@ class TaskManager:
 
         return count
 
-    def batch_start_tasks(self, max_to_start: int = None) -> int:
+    def batch_start_tasks(self, total_to_process=None, max_to_start: int = None,) -> int:
         """
         Start multiple tasks from the queue in a single batch.
 
         Args:
+            total_to_process: Total number of tasks to process overall
             max_to_start: Maximum number of tasks to start in this batch. If None, uses max_concurrent.
 
         Returns:
@@ -212,8 +185,11 @@ class TaskManager:
                         del self.active_tasks[task_id]
 
         if tasks_started > 0:
-            logging.info(
-                f"🚀 Started {tasks_started} tasks in batch (active: {len(self.active_tasks)}/{self.max_concurrent})")
+            with self.lock:
+                # Show active/total_to_process if total_to_process is set, otherwise show active/max_concurrent
+                total_display = self.total_to_process if self.total_to_process > 0 else self.max_concurrent
+                logging.info(
+                    f"🚀 Started {tasks_started} tasks in batch (active: {len(self.active_tasks)}/{total_display})")
 
         return tasks_started
 
@@ -241,6 +217,9 @@ class TaskManager:
                                 self.completed_count += 1
                                 self.completed_descriptions.append(description)
                                 task_ids_to_remove.append(task_id)
+                                # Add object_id to processed_object_ids if it exists
+                                if object_id is not None:
+                                    self.processed_object_ids.add(object_id)
 
                             # Save progress after task completion
                             save_progress(
@@ -257,6 +236,9 @@ class TaskManager:
                                 f"❌ Task failed: {description} - {error_msg}")
                             with self.lock:
                                 task_ids_to_remove.append(task_id)
+                                # Add object_id to processed_object_ids if it exists
+                                if object_id is not None:
+                                    self.processed_object_ids.add(object_id)
 
                             # Add to retry queue if not exceeded max retries
                             if attempts < self.max_retries:
@@ -315,20 +297,16 @@ class TaskManager:
                     if started > 0 and not self.task_queue.empty() and (len(self.active_tasks) < self.max_concurrent):
                         continue
 
-                # Print status every cycle
+                # Print status only when active_count increases by one
                 with self.lock:
-                    completion_percentage = 0
-                    if self.total_count > 0:
-                        completion_percentage = (
-                            self.completed_count / self.total_count) * 100
-
-                    queue_size = self.task_queue.qsize()
                     active_count = len(self.active_tasks)
-
-                    logging.info(f"📊 Status: {active_count}/{self.max_concurrent} active, {queue_size} queued, "
-                                 f"{self.completed_count} completed ({completion_percentage:.1f}%), "
-                                 f"{self.failed_count} failed, {self.skipped_count} skipped, "
-                                 f"{self.total_count} total")
+                    if active_count > self.last_active_count:
+                        # Show active/total_to_process if total_to_process is set, otherwise show active/max_concurrent
+                        total_display = self.total_to_process if self.total_to_process > 0 else self.max_concurrent
+                        logging.info(f"📊 Status: {active_count}/{total_display} active, {self.task_queue.qsize()} queued, "
+                                     f"{self.completed_count} completed, {self.failed_count} failed, {self.skipped_count} skipped, "
+                                     f"{self.total_count}/{self.total_to_process} total")
+                        self.last_active_count = active_count
 
                 # Small sleep to avoid busy waiting
                 time.sleep(0.1)
@@ -377,6 +355,9 @@ class TaskManager:
             self.skipped_count
         )
 
+        logging.info(
+            f"Final progress saved with {len(self.processed_object_ids)} processed objects")
+
     def increment_skipped(self, object_id: Optional[int] = None) -> None:
         """
         Increment the skipped count in a thread-safe manner.
@@ -388,5 +369,7 @@ class TaskManager:
             self.skipped_count += 1
             self.total_count += 1
             if object_id is not None:
+                logging.debug(
+                    f"Adding skipped object_id {object_id} to tracked objects")
                 self.processed_object_ids.add(object_id)
             logging.info(f"Skipped count: {self.skipped_count}")
