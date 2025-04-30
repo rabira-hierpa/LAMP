@@ -82,7 +82,12 @@ def create_export_task(feature_index: int, feature: ee.Feature, country: str = N
 
         # Create export task with a detailed name to facilitate tracking
         presence_value = 1 if presence == 'PRESENT' else 0
-        export_description = f'locust_{formatted_date}_label_{presence_value}_idx_{feature_index}'
+
+        # Set consistent description name including country indicator if provided
+        if country:
+            export_description = f'locust_{formatted_date}_label_{presence_value}_{country}_idx_{feature_index}'
+        else:
+            export_description = f'locust_{formatted_date}_label_{presence_value}_idx_{feature_index}'
 
         # Log non-critical missing variables (if any)
         missing_vars = get_missing_variables()
@@ -90,17 +95,11 @@ def create_export_task(feature_index: int, feature: ee.Feature, country: str = N
             logging.info(
                 f"Non-critical missing variables for feature {feature_index}: {', '.join(missing_vars)}")
 
-        if country:
-            folder = f"{EXPORT_FOLDER}_{country}"
-            logging.info(f"Exporting to folder: {folder}")
-        else:
-            folder = EXPORT_FOLDER
-
         if dry_run:
             logging.info(
                 f"[DRY RUN] Would create export task for feature {feature_index}:")
             logging.info(f"  Description: {export_description}")
-            logging.info(f"  Folder: {folder}")
+            logging.info(f"  Folder: {EXPORT_FOLDER}")
             logging.info(f"  Scale: {COMMON_SCALE}")
             logging.info(f"  CRS: {COMMON_PROJECTION}")
             logging.info(f"  Max Pixels: {MAX_PIXELS}")
@@ -113,7 +112,7 @@ def create_export_task(feature_index: int, feature: ee.Feature, country: str = N
             region=patch_geometry,
             maxPixels=MAX_PIXELS,
             crs=COMMON_PROJECTION,
-            folder=folder
+            folder=EXPORT_FOLDER
         )
         logging.info(
             f"Created export task for feature {feature_index}: {export_description}")

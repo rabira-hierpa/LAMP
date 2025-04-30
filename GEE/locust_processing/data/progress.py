@@ -59,8 +59,18 @@ def load_progress(progress_file: str) -> Tuple[Set[int], int, int, int]:
     """
     try:
         if not os.path.exists(progress_file):
-            logging.info(f"No progress file found at {progress_file}")
-            return set(), 0, 0, 0
+            logging.info(
+                f"No progress file found at {progress_file}, creating new one")
+            with open(progress_file, 'w') as f:
+                progress_data = {
+                    'processed_indices': [],
+                    'completed_count': 0,
+                    'failed_count': 0,
+                    'skipped_count': 0,
+                    'timestamp': datetime.datetime.now().isoformat()
+                }
+                json.dump(progress_data, f)
+            logging.info(f"🆕 New progress file created at {progress_file}")
 
         with open(progress_file, 'r') as f:
             progress_data = json.load(f)
