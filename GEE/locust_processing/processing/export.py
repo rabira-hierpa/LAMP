@@ -26,6 +26,17 @@ def create_export_task(feature_index: int, feature: ee.Feature, country: str = N
         Tuple of (export_task, description) if successful, None otherwise
     """
     try:
+        if dry_run:
+            folder_path = f"{EXPORT_FOLDER}_{country}" if country else EXPORT_FOLDER
+            logging.info(
+                f"[DRY RUN] Would create export task for feature {feature_index}:")
+            logging.info(f"  Description: {export_description}")
+            logging.info(f"  Folder: {folder_path}")
+            logging.info(f"  Scale: {COMMON_SCALE}")
+            logging.info(f"  CRS: {COMMON_PROJECTION}")
+            logging.info(f"  Max Pixels: {MAX_PIXELS}")
+            return None, export_description
+
         # Parse observation date
         date_result = parse_observation_date(feature, feature_index)
         if date_result is None:
@@ -94,16 +105,6 @@ def create_export_task(feature_index: int, feature: ee.Feature, country: str = N
         if missing_vars:
             logging.info(
                 f"Non-critical missing variables for feature {feature_index}: {', '.join(missing_vars)}")
-
-        if dry_run:
-            logging.info(
-                f"[DRY RUN] Would create export task for feature {feature_index}:")
-            logging.info(f"  Description: {export_description}")
-            logging.info(f"  Folder: {EXPORT_FOLDER}")
-            logging.info(f"  Scale: {COMMON_SCALE}")
-            logging.info(f"  CRS: {COMMON_PROJECTION}")
-            logging.info(f"  Max Pixels: {MAX_PIXELS}")
-            return None, export_description
 
         export_task = ee.batch.Export.image.toDrive(
             image=multi_band_image,
