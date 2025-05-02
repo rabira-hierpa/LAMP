@@ -19,3 +19,4 @@ credentials.json
 private-key.json
 GEE/locust_processing/__tests__/test_object_ids.json
 GEE/locust_processing/__tests__/test_progress.json
+.DS_Store
