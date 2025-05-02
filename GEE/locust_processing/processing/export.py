@@ -94,11 +94,9 @@ def create_export_task(feature_index: int, feature: ee.Feature, country: str = N
         # Create export task with a detailed name to facilitate tracking
         presence_value = 1 if presence == 'PRESENT' else 0
 
-        # Set consistent description name including country indicator if provided
-        if country:
-            export_description = f'locust_{formatted_date}_label_{presence_value}_{country}_idx_{feature_index}'
-        else:
-            export_description = f'locust_{formatted_date}_label_{presence_value}_idx_{feature_index}'
+        # Extract country from feature properties if possible
+        feature_country = feature.get('Country').getInfo()
+        export_description = f'locust_{formatted_date}_label_{presence_value}_{feature_country}_idx_{feature_index}'
 
         # Log non-critical missing variables (if any)
         missing_vars = get_missing_variables()
