@@ -108,12 +108,15 @@ def create_export_task(feature_index: int, feature: ee.Feature, country: str = N
         export_task = ee.batch.Export.image.toDrive(
             image=multi_band_image,
             description=export_description,
+            fileNamePrefix=export_description,
             scale=COMMON_SCALE,
             region=patch_geometry,
             maxPixels=MAX_PIXELS,
             crs=COMMON_PROJECTION,
+            fileFormat='GeoTIFF',
             folder=EXPORT_FOLDER
         )
+
         logging.info(
             f"Created export task for feature {feature_index}: {export_description}")
         return export_task, export_description

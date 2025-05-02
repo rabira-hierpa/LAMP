@@ -540,13 +540,16 @@ def create_export_task(feature_index, feature):
 
         export_task = ee.batch.Export.image.toDrive(
             image=multi_band_image,
-            description=export_description,
+            description='locust_export_job',
+            fileNamePrefix=export_description,
             scale=common_scale,
             region=patch_geometry,
             maxPixels=1e13,
             crs=common_projection,
-            folder='Locust_Export'
+            folder='Locust_Full_Exports',
+            fileFormat='GeoTIFF'
         )
+
         logging.info(
             f"Created export task for feature {feature_index}: {export_description}")
         return export_task, export_description
