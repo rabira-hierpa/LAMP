@@ -11,7 +11,7 @@ BOUNDARIES_DATASET = "USDOS/LSIB_SIMPLE/2017"
 # Export settings
 COMMON_SCALE = 250
 COMMON_PROJECTION = 'EPSG:4326'
-EXPORT_FOLDER = 'Locust_Exported_Images'
+EXPORT_FOLDER = 'Desert_Locust_Exported_Images'
 MAX_PIXELS = 1e13
 
 # Buffering settings

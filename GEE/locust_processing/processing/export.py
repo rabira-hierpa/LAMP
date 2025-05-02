@@ -26,6 +26,17 @@ def create_export_task(feature_index: int, feature: ee.Feature, country: str = N
         Tuple of (export_task, description) if successful, None otherwise
     """
     try:
+        if dry_run:
+            folder_path = f"{EXPORT_FOLDER}_{country}" if country else EXPORT_FOLDER
+            logging.info(
+                f"[DRY RUN] Would create export task for feature {feature_index}:")
+            logging.info(f"  Description: {export_description}")
+            logging.info(f"  Folder: {folder_path}")
+            logging.info(f"  Scale: {COMMON_SCALE}")
+            logging.info(f"  CRS: {COMMON_PROJECTION}")
+            logging.info(f"  Max Pixels: {MAX_PIXELS}")
+            return None, export_description
+
         # Parse observation date
         date_result = parse_observation_date(feature, feature_index)
         if date_result is None:
@@ -83,11 +94,9 @@ def create_export_task(feature_index: int, feature: ee.Feature, country: str = N
         # Create export task with a detailed name to facilitate tracking
         presence_value = 1 if presence == 'PRESENT' else 0
 
-        # Set consistent description name including country indicator if provided
-        if country:
-            export_description = f'locust_{formatted_date}_label_{presence_value}_{country}_idx_{feature_index}'
-        else:
-            export_description = f'locust_{formatted_date}_label_{presence_value}_idx_{feature_index}'
+        # Extract country from feature properties if possible
+        feature_country = feature.get('Country').getInfo()
+        export_description = f'locust_{formatted_date}_label_{presence_value}_{feature_country}_idx_{feature_index}'
 
         # Log non-critical missing variables (if any)
         missing_vars = get_missing_variables()
@@ -95,25 +104,18 @@ def create_export_task(feature_index: int, feature: ee.Feature, country: str = N
             logging.info(
                 f"Non-critical missing variables for feature {feature_index}: {', '.join(missing_vars)}")
 
-        if dry_run:
-            logging.info(
-                f"[DRY RUN] Would create export task for feature {feature_index}:")
-            logging.info(f"  Description: {export_description}")
-            logging.info(f"  Folder: {EXPORT_FOLDER}")
-            logging.info(f"  Scale: {COMMON_SCALE}")
-            logging.info(f"  CRS: {COMMON_PROJECTION}")
-            logging.info(f"  Max Pixels: {MAX_PIXELS}")
-            return None, export_description
-
         export_task = ee.batch.Export.image.toDrive(
             image=multi_band_image,
             description=export_description,
+            fileNamePrefix=export_description,
             scale=COMMON_SCALE,
             region=patch_geometry,
             maxPixels=MAX_PIXELS,
             crs=COMMON_PROJECTION,
+            fileFormat='GeoTIFF',
             folder=EXPORT_FOLDER
         )
+
         logging.info(
             f"Created export task for feature {feature_index}: {export_description}")
         return export_task, export_description

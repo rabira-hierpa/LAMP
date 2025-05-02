@@ -201,7 +201,7 @@ def process_in_test_mode(filtered_data: ee.FeatureCollection,
         filtered_data: FeatureCollection to process
         args: Command-line arguments
     """
-    logging.info(f"--- 🧪 Running in Test Mode (Index: {args.start_index}) ---")
+    logging.info(f"--- 🧪 Running in Test Mode (Single Feature) ---")
     try:
         single_point_collection = filtered_data.limit(1)
 
@@ -209,16 +209,17 @@ def process_in_test_mode(filtered_data: ee.FeatureCollection,
         single_point_count = single_point_collection.size()
         if single_point_count == 0:
             logging.error(
-                f"❌ Test mode: No feature found at position {args.start_index}. The collection may be smaller than expected.")
+                f"❌ Test mode: No feature found. The collection may be smaller than expected.")
             return
 
         # Get the first (and only) feature
         single_point = ee.Feature(single_point_collection.first())
+        single_point_id = single_point.get('OBJECTID').getInfo()
         logging.info(
-            f"🔍 Test mode: Processing feature at position {args.start_index}")
+            f"🔍 Test mode: Processing single feature with OBJECTID {single_point_id}")
 
         logging.info(f"🔧 Creating test export task...")
-        task_tuple = create_test_export_task(args.start_index, single_point)
+        task_tuple = create_test_export_task(single_point_id, single_point)
 
         if task_tuple:
             task, description = task_tuple
@@ -354,6 +355,8 @@ def process_in_batch_mode(filtered_data: ee.FeatureCollection,
                 max_balanced_count = min(
                     max_balanced_count, args.max_features // 2)
 
+            logging.info(
+                f"Processing {max_balanced_count} presence points and {max_balanced_count} absence points")
             # Process presence points in parallel
             if presence_object_ids:
                 presence_object_ids = presence_object_ids[:max_balanced_count]

@@ -305,7 +305,7 @@ class TaskManager:
                         total_display = self.total_to_process if self.total_to_process > 0 else self.max_concurrent
                         logging.info(f"📊 Status: {active_count}/{total_display} active, {self.task_queue.qsize()} queued, "
                                      f"{self.completed_count} completed, {self.failed_count} failed, {self.skipped_count} skipped, "
-                                     f"{self.total_count}/{self.total_to_process} total")
+                                     f"{self.total_to_process} total")
                         self.last_active_count = active_count
 
                 # Small sleep to avoid busy waiting
