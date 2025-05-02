@@ -354,6 +354,8 @@ def process_in_batch_mode(filtered_data: ee.FeatureCollection,
                 max_balanced_count = min(
                     max_balanced_count, args.max_features // 2)
 
+            logging.info(
+                f"Processing {max_balanced_count} presence points and {max_balanced_count} absence points")
             # Process presence points in parallel
             if presence_object_ids:
                 presence_object_ids = presence_object_ids[:max_balanced_count]
