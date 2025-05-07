@@ -2,8 +2,9 @@
 .streamlit/secrets.toml
 .qodo
 locust_export.log
+ethiopia_export_progress.json
+*.log
 .vscode/
-
 # Python
 __pycache__/
 *.pyc

@@ -95,7 +95,13 @@ def create_export_task(feature_index: int, feature: ee.Feature, country: str = N
         presence_value = 1 if presence == 'PRESENT' else 0
 
         # Extract country from feature properties if possible
-        feature_country = feature.get('Country').getInfo()
+        try:
+            feature_country = feature.get('Country').getInfo()
+        except Exception as e:
+            logging.warning(
+                f"Could not get Country property for feature {feature_index}: {str(e)}")
+            feature_country = country if country else "unknown"
+
         export_description = f'locust_{formatted_date}_label_{presence_value}_{feature_country}_idx_{feature_index}'
 
         # Log non-critical missing variables (if any)

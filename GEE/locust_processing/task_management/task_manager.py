@@ -10,7 +10,7 @@ from queue import Queue
 from threading import Thread, Lock
 from typing import Dict, List, Optional, Tuple, Any, Callable, Set
 
-from ..data.progress import save_progress
+from ..data.progress import save_progress, get_progress_summary
 from ..config import MAX_CONCURRENT_TASKS, MAX_RETRIES, RETRY_DELAY_SECONDS, DEFAULT_PROGRESS_FILE
 
 
@@ -74,8 +74,21 @@ class TaskManager:
                     f"⚠️ Task with OBJECT_ID {object_id} already processed. Skipping.")
                 self.skipped_count += 1
                 return
-            # Only add it when task is completed, failed, or skipped
-
+            # Only add it when task is added, completed, failed, or skipped
+            self.processed_object_ids.add(object_id)
+            save_progress(
+                self.progress_file,
+                list(self.processed_object_ids),
+                self.completed_count,
+                self.failed_count,
+                self.skipped_count
+            )
+            get_progress_summary(
+                self.processed_object_ids,
+                self.completed_count,
+                self.failed_count,
+                self.skipped_count
+            )
         # (task, description, attempts, object_id)
         self.task_queue.put((task, description, 0, object_id))
         logging.info(f"➕ Added task to queue: {description}")
@@ -267,6 +280,12 @@ class TaskManager:
                             with self.lock:
                                 self.failed_count += 1
                                 task_ids_to_remove.append(task_id)
+                        get_progress_summary(
+                            self.processed_object_ids,
+                            self.completed_count,
+                            self.failed_count,
+                            self.skipped_count
+                        )
                     except Exception as e:
                         logging.error(
                             f"Error monitoring task {description}: {str(e)}")
