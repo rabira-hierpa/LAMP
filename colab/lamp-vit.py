@@ -22,12 +22,13 @@ import logging
 from pathlib import Path
 from torch.amp import autocast, GradScaler
 import sys
+import torchvision.transforms as transforms
+
+# Ensure plots display in Colab
+%matplotlib inline
 
 # Suppress debugger warnings
 %env PYDEVD_DISABLE_FILE_VALIDATION = 1
-
-print(f"Mounting GDrive")
-drive.mount('/content/drive', force_remount=True)
 
 # Set up logging
 logging.basicConfig(
@@ -42,9 +43,11 @@ logger = logging.getLogger(__name__)
 
 # Mount Google Drive
 logger.info("Mounting Google Drive...")
-
+drive.mount('/content/drive', force_remount=True)
 
 # Function to load .npy file with progress bar
+
+
 def load_numpy_with_progress(file_path, mmap_mode='r'):
     file_path = Path(file_path)
     total_size = file_path.stat().st_size
@@ -189,6 +192,11 @@ class AugmentedDataset(Dataset):
     def __init__(self, inputs, labels):
         self.inputs = inputs
         self.labels = labels
+        self.transform = transforms.Compose([
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomVerticalFlip(),
+            transforms.RandomRotation(degrees=(0, 360), fill=0),
+        ])
 
     def __len__(self):
         return len(self.inputs)
@@ -196,12 +204,9 @@ class AugmentedDataset(Dataset):
     def __getitem__(self, idx):
         input_data = self.inputs[idx]
         label = self.labels[idx]
-        if random.random() > 0.5:
-            input_data = torch.flip(input_data, [1])  # Flip height
-            label = torch.flip(label, [0])
-        if random.random() > 0.5:
-            input_data = torch.flip(input_data, [2])  # Flip width
-            label = torch.flip(label, [1])
+        # Apply transformations
+        input_data = self.transform(input_data)
+        label = self.transform(label.unsqueeze(0)).squeeze(0)
         return input_data, label
 
 
@@ -219,11 +224,11 @@ batch_size = 8
 train_loader = DataLoader(
     train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True)
 val_loader = DataLoader(val_dataset, batch_size=batch_size, pin_memory=True)
-# Define Vision Transformer model with reduced size
+# Define Vision Transformer model with increased dropout
 
 
 class ViTForSegmentation(nn.Module):
-    def __init__(self, in_channels=59, hidden_dim=256, num_heads=8, num_layers=4, mlp_dim=1024, dropout=0.1):
+    def __init__(self, in_channels=59, hidden_dim=128, num_heads=8, num_layers=4, mlp_dim=1024, dropout=0.3):
         super().__init__()
         self.patch_embed = nn.Linear(in_channels, hidden_dim)
         self.pos_embed = nn.Parameter(torch.zeros(1, 41*41, hidden_dim))
@@ -255,7 +260,7 @@ model = ViTForSegmentation()
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 model.to(device)
 criterion = nn.BCEWithLogitsLoss()
-optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
+optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-4)
 scaler = GradScaler()
 logger.info(f"Using device: {device}")
 # Training loop with early stopping
@@ -265,7 +270,7 @@ train_accuracies = []
 val_losses = []
 val_accuracies = []
 best_val_loss = float('inf')
-patience = 3
+patience = 10
 counter = 0
 for epoch in range(num_epochs):
     logger.info(f"Starting epoch {epoch+1}/{num_epochs}")
@@ -371,15 +376,34 @@ val_preds = np.where(np.isnan(val_preds) | np.isinf(val_preds), 0, val_preds)
 val_labels = np.where(np.isnan(val_labels) |
                       np.isinf(val_labels), 0, val_labels)
 preds_binary = (val_preds > 0.5).astype(int)
-# Plot loss curves
-logger.info("Generating loss curves...")
+# Plot combined metrics
+logger.info("Generating combined metrics plot...")
+fig, ax1 = plt.subplots(figsize=(10, 5))
+color = 'tab:red'
+ax1.set_xlabel('Epoch')
+ax1.set_ylabel('Loss', color=color)
+ax1.plot(train_losses, label='Train Loss', color='red')
+ax1.plot(val_losses, label='Val Loss', color='orange')
+ax1.tick_params(axis='y', labelcolor=color)
+ax2 = ax1.twinx()
+color = 'tab:blue'
+ax2.set_ylabel('Accuracy', color=color)
+ax2.plot(train_accuracies, label='Train Accuracy', color='blue')
+ax2.plot(val_accuracies, label='Val Accuracy', color='green')
+ax2.tick_params(axis='y', labelcolor=color)
+fig.tight_layout()
+fig.legend(loc='upper left', bbox_to_anchor=(0.1, 0.9))
+plt.title('Training and Validation Metrics')
+plt.show()
+# Plot accuracy
+logger.info("Generating accuracy plot...")
 plt.figure(figsize=(10, 5))
-plt.plot(train_losses, label='Train Loss')
-plt.plot(val_losses, label='Val Loss')
+plt.plot(train_accuracies, label='Train Accuracy')
+plt.plot(val_accuracies, label='Val Accuracy')
 plt.xlabel('Epoch')
-plt.ylabel('Loss')
+plt.ylabel('Accuracy')
 plt.legend()
-plt.title('Loss Curves')
+plt.title('Training and Validation Accuracy')
 plt.show()
 # Plot confusion matrix
 logger.info("Generating confusion matrix...")
