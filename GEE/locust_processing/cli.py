@@ -357,6 +357,13 @@ def process_in_batch_mode(filtered_data: ee.FeatureCollection,
 
             logging.info(
                 f"Processing {max_balanced_count} presence points and {max_balanced_count} absence points")
+            # Process absence points in parallel
+            if absence_object_ids:
+                absence_object_ids = absence_object_ids[:max_balanced_count]
+                logging.info(
+                    f"Processing {len(absence_object_ids)} absence points in parallel")
+                process_features_parallel(
+                    absence_data, absence_object_ids, task_manager.processed_object_ids, task_manager, args.batch_size, args.country, args.progress_file, args.dry_run)
             # Process presence points in parallel
             if presence_object_ids:
                 presence_object_ids = presence_object_ids[:max_balanced_count]
@@ -365,13 +372,6 @@ def process_in_batch_mode(filtered_data: ee.FeatureCollection,
                 process_features_parallel(
                     presence_data, presence_object_ids, task_manager.processed_object_ids, task_manager, args.batch_size, args.country, args.progress_file, args.dry_run)
 
-             # Process absence points in parallel
-            if absence_object_ids:
-                absence_object_ids = absence_object_ids[:max_balanced_count]
-                logging.info(
-                    f"Processing {len(absence_object_ids)} absence points in parallel")
-                process_features_parallel(
-                    absence_data, absence_object_ids, task_manager.processed_object_ids, task_manager, args.batch_size, args.country, args.progress_file, args.dry_run)
         else:
             # Process all features in parallel
             process_features_parallel(
