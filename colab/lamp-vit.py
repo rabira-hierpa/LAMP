@@ -23,12 +23,18 @@ from pathlib import Path
 from torch.amp import autocast, GradScaler
 import sys
 import torchvision.transforms as transforms
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 # Ensure plots display in Colab
 %matplotlib inline
 
 # Suppress debugger warnings
 %env PYDEVD_DISABLE_FILE_VALIDATION = 1
+
+# Mount Google Drive
+print("Mounting GDrive")
+drive.mount('/content/drive', force_remount=True)
+
 
 # Set up logging
 logging.basicConfig(
@@ -41,13 +47,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Mount Google Drive
-logger.info("Mounting Google Drive...")
-drive.mount('/content/drive', force_remount=True)
 
 # Function to load .npy file with progress bar
-
-
 def load_numpy_with_progress(file_path, mmap_mode='r'):
     file_path = Path(file_path)
     total_size = file_path.stat().st_size
@@ -141,6 +142,7 @@ except Exception as e:
     file_list = glob.glob(
         '/content/drive/MyDrive/Desert_Locust_Exported_Images_Ethiopia/*.tif')
     logger.info(f"Found {len(file_list)} GeoTIFF files")
+    print(f"Found {len(file_list)} GeoTIFF files")
     presence_files = []
     absence_files = []
     for file in tqdm(file_list, desc="Classifying files"):
@@ -151,6 +153,8 @@ except Exception as e:
             absence_files.append(file)
     logger.info(
         f"Presence files: {len(presence_files)}, Absence files: {len(absence_files)}")
+    print(
+        f"Presence files: {len(presence_files)}, Absence files: {len(absence_files)}")
     random.seed(42)
     num_samples = min(len(presence_files), len(
         absence_files))  # Use all available images
@@ -159,24 +163,30 @@ except Exception as e:
     random.shuffle(balanced_file_list)
     logger.info(
         f"Selected {len(balanced_file_list)} files for balanced dataset")
+    print(f"Selected {len(balanced_file_list)} files for balanced dataset")
     inputs_array, labels_array = load_all_data(balanced_file_list)
     logger.info("Validating preprocessed data...")
+    print("Validating preprocessed data...")
     inputs_array = np.where(np.isnan(inputs_array) |
                             np.isinf(inputs_array), 0, inputs_array)
     labels_array = np.where(np.isnan(labels_array) |
                             np.isinf(labels_array), 0, labels_array)
     labels_array = np.where(labels_array > 0.5, 1, 0).astype(np.float32)
     logger.info("Saving preprocessed data...")
+    print("Saving preprocessed data...")
     np.save(preprocessed_inputs, inputs_array)
     np.save(preprocessed_labels, labels_array)
     logger.info("Preprocessed data saved.")
+    print("Preprocessed data saved.")
     gc.collect()
 
 # Convert to Dask arrays with smaller chunks
 logger.info("Converting to Dask arrays...")
+print("Converting to Dask arrays...")
 inputs_dask = da.from_array(inputs_array, chunks=(50, 59, 41, 41))
 labels_dask = da.from_array(labels_array, chunks=(50, 41, 41))
 logger.info("Computing Dask arrays to PyTorch tensors...")
+print("Computing Dask arrays to PyTorch tensors...")
 inputs_tensor = torch.from_numpy(
     inputs_dask.compute(scheduler='threads')).float()
 labels_tensor = torch.from_numpy(
@@ -214,16 +224,21 @@ dataset = AugmentedDataset(inputs_tensor, labels_tensor)
 logger.info(f"Created dataset with {len(dataset)} samples")
 del inputs_array, labels_array, inputs_dask, labels_dask
 gc.collect()
-# Split dataset
-train_size = int(0.8 * len(dataset))
-val_size = len(dataset) - train_size
-train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
-logger.info(f"Train size: {train_size}, Validation size: {val_size}")
+# Split dataset into train, val, test
+N = len(dataset)
+train_size = int(0.6 * N)
+val_size = int(0.2 * N)
+test_size = N - train_size - val_size
+train_dataset, val_dataset, test_dataset = random_split(
+    dataset, [train_size, val_size, test_size])
+logger.info(
+    f"Train size: {train_size}, Validation size: {val_size}, Test size: {test_size}")
 # Create DataLoaders
 batch_size = 8
 train_loader = DataLoader(
     train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True)
 val_loader = DataLoader(val_dataset, batch_size=batch_size, pin_memory=True)
+test_loader = DataLoader(test_dataset, batch_size=batch_size, pin_memory=True)
 # Define Vision Transformer model with increased dropout
 
 
@@ -261,10 +276,11 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 model.to(device)
 criterion = nn.BCEWithLogitsLoss()
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-4)
+scheduler = ReduceLROnPlateau(optimizer, 'min', patience=2, factor=0.1)
 scaler = GradScaler()
 logger.info(f"Using device: {device}")
 # Training loop with early stopping
-num_epochs = 20
+num_epochs = 30
 train_losses = []
 train_accuracies = []
 val_losses = []
@@ -295,10 +311,8 @@ for epoch in range(num_epochs):
         scaler.update()
         train_loss += loss.item() * inputs.size(0)
         preds = (torch.sigmoid(outputs) > 0.5).float()
-        correct = (preds == labels).sum().item()
-        total = labels.numel()
-        train_correct += correct
-        train_total += total
+        train_correct += (preds == labels).sum().item()
+        train_total += labels.numel()
         del inputs, labels, outputs, loss, preds
         gc.collect()
     train_loss /= len(train_loader.dataset)
@@ -323,10 +337,8 @@ for epoch in range(num_epochs):
                 loss = criterion(outputs.squeeze(), labels)
             val_loss += loss.item() * inputs.size(0)
             preds = (torch.sigmoid(outputs) > 0.5).float()
-            correct = (preds == labels).sum().item()
-            total = labels.numel()
-            val_correct += correct
-            val_total += total
+            val_correct += (preds == labels).sum().item()
+            val_total += labels.numel()
             del inputs, labels, outputs, loss, preds
             gc.collect()
     val_loss /= len(val_loader.dataset)
@@ -338,6 +350,7 @@ for epoch in range(num_epochs):
     logger.info(
         f"Epoch {epoch+1}: Val Loss: {val_loss:.4f}, Val Accuracy: {val_accuracy:.4f}")
     sys.stdout.flush()
+    scheduler.step(val_loss)
     if val_loss < best_val_loss:
         best_val_loss = val_loss
         counter = 0
@@ -348,19 +361,63 @@ for epoch in range(num_epochs):
         if counter >= patience:
             logger.info(f"Early stopping at epoch {epoch+1}")
             break
-# Compute average metrics
+
+# Load best model for test evaluation and visualizations
+model.load_state_dict(torch.load(
+    '/content/drive/MyDrive/best_locust_model.pth'))
+model.eval()
+
+# Function to evaluate on test set
+
+
+def evaluate_test_set(model, test_loader, criterion, device):
+    model.eval()
+    test_loss = 0
+    test_correct = 0
+    test_total = 0
+    all_preds = []
+    all_labels = []
+    with torch.no_grad():
+        for inputs, labels in test_loader:
+            inputs, labels = inputs.to(device), labels.to(device)
+            outputs = model(inputs)
+            loss = criterion(outputs.squeeze(), labels)
+            test_loss += loss.item() * inputs.size(0)
+            preds = (torch.sigmoid(outputs) > 0.5).float()
+            test_correct += (preds == labels).sum().item()
+            test_total += labels.numel()
+            all_preds.append(preds.cpu().numpy())
+            all_labels.append(labels.cpu().numpy())
+    test_loss /= len(test_loader.dataset)
+    test_accuracy = test_correct / test_total
+    all_preds = np.concatenate(all_preds).flatten()
+    all_labels = np.concatenate(all_labels).flatten()
+    test_f1 = f1_score(all_labels, all_preds, zero_division=0)
+    test_precision = precision_score(all_labels, all_preds, zero_division=0)
+    test_recall = recall_score(all_labels, all_preds, zero_division=0)
+    test_roc_auc = roc_auc_score(all_labels, all_preds)
+    return test_loss, test_accuracy, test_f1, test_precision, test_recall, test_roc_auc
+
+
+# Evaluate on test set after final epoch
+test_loss, test_accuracy, test_f1, test_precision, test_recall, test_roc_auc = evaluate_test_set(
+    model, test_loader, criterion, device)
+print(f"Test Accuracy: {test_accuracy:.4f}, Test Loss: {test_loss:.4f} Test F1-score: {test_f1:.4f}, Test Precision: {test_precision:.4f}, Test Recall: {test_recall:.4f}, Test ROC-AUC: {test_roc_auc:.4f}")
+
+# Compute average metrics for train and val
 avg_train_loss = sum(train_losses) / len(train_losses)
 avg_train_accuracy = sum(train_accuracies) / len(train_accuracies)
 avg_val_loss = sum(val_losses) / len(val_losses)
 avg_val_accuracy = sum(val_accuracies) / len(val_accuracies)
 logger.info(f"Average Train Loss: {avg_train_loss:.4f}")
+print(f"Average Train Loss: {avg_train_loss:.4f}")
 logger.info(f"Average Train Accuracy: {avg_train_accuracy:.4f}")
+print(f"Average Train Accuracy: {avg_train_accuracy:.4f}")
 logger.info(f"Average Validation Loss: {avg_val_loss:.4f}")
+print(f"Average Validation Loss: {avg_val_loss:.4f}")
 logger.info(f"Average Validation Accuracy: {avg_val_accuracy:.4f}")
-# Load best model for visualizations
-model.load_state_dict(torch.load(
-    '/content/drive/MyDrive/best_locust_model.pth'))
-model.eval()
+print(f"Average Validation Accuracy: {avg_val_accuracy:.4f}")
+
 # Compute validation metrics for visualizations
 val_preds, val_labels = [], []
 with torch.no_grad():
@@ -376,8 +433,10 @@ val_preds = np.where(np.isnan(val_preds) | np.isinf(val_preds), 0, val_preds)
 val_labels = np.where(np.isnan(val_labels) |
                       np.isinf(val_labels), 0, val_labels)
 preds_binary = (val_preds > 0.5).astype(int)
+
 # Plot combined metrics
 logger.info("Generating combined metrics plot...")
+print("Generating combined metrics plot...")
 fig, ax1 = plt.subplots(figsize=(10, 5))
 color = 'tab:red'
 ax1.set_xlabel('Epoch')
@@ -395,8 +454,10 @@ fig.tight_layout()
 fig.legend(loc='upper left', bbox_to_anchor=(0.1, 0.9))
 plt.title('Training and Validation Metrics')
 plt.show()
+
 # Plot accuracy
 logger.info("Generating accuracy plot...")
+print("Generating accuracy plot...")
 plt.figure(figsize=(10, 5))
 plt.plot(train_accuracies, label='Train Accuracy')
 plt.plot(val_accuracies, label='Val Accuracy')
@@ -405,17 +466,21 @@ plt.ylabel('Accuracy')
 plt.legend()
 plt.title('Training and Validation Accuracy')
 plt.show()
-# Plot confusion matrix
+
+# Plot confusion matrix (validation set)
 logger.info("Generating confusion matrix...")
+print("Generating confusion matrix...")
 cm = confusion_matrix(val_labels, preds_binary)
 plt.figure(figsize=(5, 5))
 sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
 plt.xlabel('Predicted')
 plt.ylabel('True')
-plt.title('Confusion Matrix')
+plt.title('Confusion Matrix (Validation Set)')
 plt.show()
-# Plot ROC curve
+
+# Plot ROC curve (validation set)
 logger.info("Generating ROC curve...")
+print("Generating ROC curve...")
 fpr, tpr, _ = roc_curve(val_labels, val_preds)
 roc_auc = roc_auc_score(val_labels, val_preds)
 plt.figure(figsize=(5, 5))
@@ -423,11 +488,13 @@ plt.plot(fpr, tpr, label=f'ROC AUC = {roc_auc:.4f}')
 plt.plot([0, 1], [0, 1], 'k--')
 plt.xlabel('False Positive Rate')
 plt.ylabel('True Positive Rate')
-plt.title('ROC Curve')
+plt.title('ROC Curve (Validation Set)')
 plt.legend()
 plt.show()
-# Visualize sample predictions
+
+# Visualize sample predictions (validation set)
 logger.info("Generating sample predictions...")
+print("Generating sample predictions....")
 num_samples = 3
 indices = np.random.choice(len(val_dataset), num_samples, replace=False)
 for i in indices:
