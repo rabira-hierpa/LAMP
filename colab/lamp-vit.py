@@ -62,8 +62,6 @@ def load_numpy_with_progress(file_path, mmap_mode='r'):
             raise
 
 # Function to extract label from file name
-
-
 def get_label_from_filename(file):
     base = os.path.basename(file)
     name = os.path.splitext(base)[0]
@@ -77,8 +75,6 @@ def get_label_from_filename(file):
         return None
 
 # Function to process a single GeoTIFF file
-
-
 def process_file(file):
     try:
         with rasterio.open(file) as src:
@@ -107,8 +103,6 @@ def process_file(file):
         return None
 
 # Function to load all data with progress
-
-
 def load_all_data(file_list):
     inputs_list = []
     labels_list = []
@@ -279,10 +273,15 @@ optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-4)
 scheduler = ReduceLROnPlateau(optimizer, 'min', patience=2, factor=0.1)
 scaler = GradScaler()
 logger.info(f"Using device: {device}")
+
 # Training loop with early stopping
 num_epochs = 30
 train_losses = []
 train_accuracies = []
+train_f1s = []
+train_precisions = []
+train_recalls = []
+train_roc_aucs = []
 val_losses = []
 val_accuracies = []
 best_val_loss = float('inf')
@@ -294,6 +293,8 @@ for epoch in range(num_epochs):
     train_loss = 0
     train_correct = 0
     train_total = 0
+    all_train_preds = []
+    all_train_labels = []
     for inputs, labels in tqdm(train_loader, desc=f"Epoch {epoch+1} Training"):
         inputs, labels = inputs.to(device, non_blocking=True), labels.to(
             device, non_blocking=True)
@@ -313,16 +314,37 @@ for epoch in range(num_epochs):
         preds = (torch.sigmoid(outputs) > 0.5).float()
         train_correct += (preds == labels).sum().item()
         train_total += labels.numel()
-        del inputs, labels, outputs, loss, preds
+        # Store predictions and labels for metrics calculation
+        all_train_preds.append(preds.detach().cpu().numpy())
+        all_train_labels.append(labels.detach().cpu().numpy())
+        del inputs, outputs, loss
         gc.collect()
+    # Calculate train metrics
     train_loss /= len(train_loader.dataset)
     train_accuracy = train_correct / train_total
+    # Convert lists to flattened numpy arrays for metric calculation
+    all_train_preds = np.concatenate([p.flatten() for p in all_train_preds])
+    all_train_labels = np.concatenate([l.flatten() for l in all_train_labels])
+    train_f1 = f1_score(all_train_labels, all_train_preds, zero_division=0)
+    train_precision = precision_score(all_train_labels, all_train_preds, zero_division=0)
+    train_recall = recall_score(all_train_labels, all_train_preds, zero_division=0)
+    train_roc_auc = roc_auc_score(all_train_labels, all_train_preds)
+    # Append metrics to history lists
     train_losses.append(train_loss)
     train_accuracies.append(train_accuracy)
+    train_f1s.append(train_f1)
+    train_precisions.append(train_precision)
+    train_recalls.append(train_recall)
+    train_roc_aucs.append(train_roc_auc)
+    # Print and log metrics
     print(
-        f"Epoch {epoch+1}: Train Loss: {train_loss:.4f}, Train Accuracy: {train_accuracy:.4f}")
+        f"Epoch {epoch+1}: Train Loss: {train_loss:.4f}, Train Accuracy: {train_accuracy:.4f}, "
+        f"Train F1: {train_f1:.4f}, Train Precision: {train_precision:.4f}, "
+        f"Train Recall: {train_recall:.4f}, Train ROC-AUC: {train_roc_auc:.4f}")
     logger.info(
-        f"Epoch {epoch+1}: Train Loss: {train_loss:.4f}, Train Accuracy: {train_accuracy:.4f}")
+        f"Epoch {epoch+1}: Train Loss: {train_loss:.4f}, Train Accuracy: {train_accuracy:.4f}, "
+        f"Train F1: {train_f1:.4f}, Train Precision: {train_precision:.4f}, "
+        f"Train Recall: {train_recall:.4f}, Train ROC-AUC: {train_roc_auc:.4f}")
     sys.stdout.flush()
     model.eval()
     val_loss = 0
@@ -368,8 +390,6 @@ model.load_state_dict(torch.load(
 model.eval()
 
 # Function to evaluate on test set
-
-
 def evaluate_test_set(model, test_loader, criterion, device):
     model.eval()
     test_loss = 0
@@ -407,12 +427,26 @@ print(f"Test Accuracy: {test_accuracy:.4f}, Test Loss: {test_loss:.4f} Test F1-s
 # Compute average metrics for train and val
 avg_train_loss = sum(train_losses) / len(train_losses)
 avg_train_accuracy = sum(train_accuracies) / len(train_accuracies)
+avg_train_f1 = sum(train_f1s) / len(train_f1s)
+avg_train_precision = sum(train_precisions) / len(train_precisions)
+avg_train_recall = sum(train_recalls) / len(train_recalls)
+avg_train_roc_auc = sum(train_roc_aucs) / len(train_roc_aucs)
 avg_val_loss = sum(val_losses) / len(val_losses)
 avg_val_accuracy = sum(val_accuracies) / len(val_accuracies)
+
+# Print and log all average metrics
 logger.info(f"Average Train Loss: {avg_train_loss:.4f}")
 print(f"Average Train Loss: {avg_train_loss:.4f}")
 logger.info(f"Average Train Accuracy: {avg_train_accuracy:.4f}")
 print(f"Average Train Accuracy: {avg_train_accuracy:.4f}")
+logger.info(f"Average Train F1-score: {avg_train_f1:.4f}")
+print(f"Average Train F1-score: {avg_train_f1:.4f}")
+logger.info(f"Average Train Precision: {avg_train_precision:.4f}")
+print(f"Average Train Precision: {avg_train_precision:.4f}")
+logger.info(f"Average Train Recall: {avg_train_recall:.4f}")
+print(f"Average Train Recall: {avg_train_recall:.4f}")
+logger.info(f"Average Train ROC-AUC: {avg_train_roc_auc:.4f}")
+print(f"Average Train ROC-AUC: {avg_train_roc_auc:.4f}")
 logger.info(f"Average Validation Loss: {avg_val_loss:.4f}")
 print(f"Average Validation Loss: {avg_val_loss:.4f}")
 logger.info(f"Average Validation Accuracy: {avg_val_accuracy:.4f}")
@@ -465,6 +499,40 @@ plt.xlabel('Epoch')
 plt.ylabel('Accuracy')
 plt.legend()
 plt.title('Training and Validation Accuracy')
+plt.show()
+
+# Plot F1-scores
+logger.info("Generating F1-score plot...")
+print("Generating F1-score plot...")
+plt.figure(figsize=(10, 5))
+plt.plot(train_f1s, label='Train F1-score')
+plt.xlabel('Epoch')
+plt.ylabel('F1-score')
+plt.legend()
+plt.title('Training F1-score')
+plt.show()
+
+# Plot Precision and Recall
+logger.info("Generating Precision/Recall plot...")
+print("Generating Precision/Recall plot...")
+plt.figure(figsize=(10, 5))
+plt.plot(train_precisions, label='Train Precision')
+plt.plot(train_recalls, label='Train Recall')
+plt.xlabel('Epoch')
+plt.ylabel('Score')
+plt.legend()
+plt.title('Training Precision and Recall')
+plt.show()
+
+# Plot ROC-AUC
+logger.info("Generating ROC-AUC plot...")
+print("Generating ROC-AUC plot...")
+plt.figure(figsize=(10, 5))
+plt.plot(train_roc_aucs, label='Train ROC-AUC')
+plt.xlabel('Epoch')
+plt.ylabel('ROC-AUC')
+plt.legend()
+plt.title('Training ROC-AUC')
 plt.show()
 
 # Plot confusion matrix (validation set)
