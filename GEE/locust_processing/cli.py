@@ -16,7 +16,7 @@ from .processing.indices import set_region_boundary
 from .processing.export import create_export_task, create_test_export_task, start_export_task
 from .processing.extraction import get_missing_variables
 from .task_management.task_manager import TaskManager
-from .data.progress import save_progress, load_progress
+from .data.progress import save_progress, load_progress, update_progress_file
 from .config import (
     COMMON_SCALE,
     COMMON_PROJECTION,
@@ -426,6 +426,8 @@ def main():
                         help='Process only balanced samples (equal number of presence and absence)')
     parser.add_argument('--progress-file', type=str, default=DEFAULT_PROGRESS_FILE,
                         help='File to save/load progress')
+    parser.add_argument('--update-progress', type=str, default=DEFAULT_PROGRESS_FILE,
+                        help='Update progress file with new processed features')
     parser.add_argument('--log-file', type=str, default=DEFAULT_LOG_FILE,
                         help='Log file name')
     parser.add_argument('--country', type=str, default=None,
@@ -514,6 +516,11 @@ def main():
     if feature_count == 0:
         logging.warning("🚫 No features remaining after filtering. Exiting.")
         return
+
+    # Update progress file if specified
+    # if args.update_progress:
+    #     update_progress_file(args.progress_file)
+    #     return
 
     # Load progress if available
     processed_object_ids, completed_count, failed_count, skipped_count = load_progress(
