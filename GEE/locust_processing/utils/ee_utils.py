@@ -13,35 +13,68 @@ from ..config import EE_CREDENTIALS_PATH
 def initialize_ee() -> None:
     """
     Initialize Earth Engine with authentication.
-    First attempts high-level authentication, then falls back to service account.
+    First attempts high-level authentication, then falls back to service account,
+    finally falls back to interactive authentication.
 
     Raises:
         Exception: If authentication fails
     """
-    try:
-        # Try using the high-level ee.Authenticate() function
-        ee.Authenticate()
-        ee.Initialize()
-        logging.info(
-            "Google Earth Engine authenticated and initialized successfully!")
-    except Exception as e:
-        # If the high-level function fails, try service account authentication
-        try:
-            # Check if credentials file exists
-            if not os.path.exists(EE_CREDENTIALS_PATH):
-                raise FileNotFoundError(
-                    f"Credentials file not found at {EE_CREDENTIALS_PATH}")
+    # Define possible locations for credentials
+    possible_credential_locations = [
+        EE_CREDENTIALS_PATH,  # From config
+        # Current working directory
+        os.path.join(os.getcwd(), "private-key.json"),
+        os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__)))), "private-key.json"),  # Project root
+    ]
 
-            # Initialize with service account
-            credentials = ee.ServiceAccountCredentials(
-                None, EE_CREDENTIALS_PATH)
-            ee.Initialize(credentials)
+    try:
+        # First try: Use the high-level ee.Initialize() function
+        try:
+            ee.Initialize(project='desert-locust-forcast')
             logging.info(
-                "Google Earth Engine authenticated using service account credentials!")
-        except Exception as sub_e:
-            logging.error(
-                f"Failed to authenticate with Earth Engine: {str(sub_e)}")
-            raise
+                "Google Earth Engine initialized successfully with default project!")
+            return
+        except Exception as e1:
+            logging.warning(
+                f"Default initialization failed: {str(e1)}. Trying authentication methods...")
+
+        # Second try: Service account authentication
+        credential_found = False
+        for cred_path in possible_credential_locations:
+            if os.path.exists(cred_path):
+                credential_found = True
+                try:
+                    credentials = ee.ServiceAccountCredentials(None, cred_path)
+                    ee.Initialize(credentials, project='desert-locust-forcast')
+                    logging.info(
+                        f"Google Earth Engine authenticated using service account credentials from {cred_path}!")
+                    return
+                except Exception as service_e:
+                    logging.warning(
+                        f"Service account authentication with {cred_path} failed: {str(service_e)}")
+
+        # Third try: Interactive authentication
+        if not credential_found:
+            logging.warning(
+                "No credentials file found. Attempting interactive authentication...")
+
+        try:
+            ee.Authenticate()
+            ee.Initialize(project='desert-locust-forcast')
+            logging.info(
+                "Google Earth Engine authenticated and initialized through interactive authentication!")
+            return
+        except Exception as e2:
+            logging.error(f"Interactive authentication failed: {str(e2)}")
+
+        # If we got here, all methods failed
+        raise Exception(
+            "All Earth Engine authentication methods failed. Please check your credentials.")
+
+    except Exception as e:
+        logging.error(f"Failed to authenticate with Earth Engine: {str(e)}")
+        raise
 
 
 def check_ee_initialized() -> bool:

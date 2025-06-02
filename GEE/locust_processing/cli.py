@@ -16,7 +16,7 @@ from .processing.indices import set_region_boundary
 from .processing.export import create_export_task, create_test_export_task, start_export_task
 from .processing.extraction import get_missing_variables
 from .task_management.task_manager import TaskManager
-from .data.progress import save_progress, load_progress
+from .data.progress import save_progress, load_progress, update_progress_file
 from .config import (
     COMMON_SCALE,
     COMMON_PROJECTION,
@@ -31,60 +31,165 @@ from .config import (
 
 
 def process_single_feature(filtered_data: ee.FeatureCollection,
-                           idx: int,
-                           use_index: bool,
-                           processed_indices: Set[int],
-                           task_manager: TaskManager) -> bool:
+                           object_id: int,
+                           processed_object_ids: Set[int],
+                           task_manager: TaskManager,
+                           total_to_process: int,
+                           country: str = None,
+                           progress_file: str = None,
+                           dry_run: bool = False,
+                           ) -> bool:
     """
-    Process a single feature by index or position.
+    Process a single feature by OBJECTID.
 
     Args:
         filtered_data: FeatureCollection to process
-        idx: Index of the feature to process
-        use_index: Whether to use index property or direct position
-        processed_indices: Set of already processed indices
+        object_id: OBJECTID of the feature to process
+        processed_object_ids: Set of already processed OBJECTIDs
         task_manager: TaskManager instance for task handling
+        total_to_process: Total number of features to process
+        country: Optional country name to use in export folder
+        progress_file: Optional path to the progress file
+        dry_run: If True, simulate task creation without actually creating it
 
     Returns:
-        bool: True if the feature was processed successfully, False otherwise
+        bool: True if the feature was queued successfully, False otherwise
     """
-    if idx in processed_indices:
-        logging.info(f"Skipping already processed feature index {idx}")
+    if object_id in processed_object_ids:
+        logging.info(
+            f"⏭️ Skipping already processed feature with OBJECTID {object_id}")
         return True
 
     try:
-        # Get the feature either by index or position
-        if use_index:
-            # Filter by index property
-            feature_collection = filtered_data.filter(
-                ee.Filter.eq('index', idx)).limit(1)
-        else:
-            # Use direct pagination - sort by a property then take the idx-th element
-            # Earth Engine doesn't support direct skip/limit, so we need to sort and take
-            feature_collection = filtered_data.filter(
-                ee.Filter.eq('index', idx)).limit(1)
+        # Filter by OBJECTID from the filtered_data
+        feature_collection = filtered_data.filter(
+            ee.Filter.eq('OBJECTID', object_id))
 
         # Check if any features were found
         count = feature_collection.size().getInfo()
         if count == 0:
-            logging.warning(f"Feature at position {idx} not found. Skipping.")
+            logging.warning(
+                f"🚫 Feature with OBJECTID {object_id} not found. Skipping.")
+            task_manager.increment_skipped(object_id)
             return False
 
         # Get the feature
         feature_to_process = ee.Feature(feature_collection.first())
+        # Create the export task
+        try:
+            task_tuple = create_export_task(
+                object_id, feature_to_process, country, dry_run)
+            if task_tuple is None:
+                logging.error(
+                    f"🚫 Could not create export task for feature with OBJECTID {object_id}")
+                task_manager.increment_skipped(object_id)
+                return False
 
-        task_tuple = create_export_task(idx, feature_to_process)
-        # Adds None if creation failed, handled by add_task
-        task_manager.add_task(task_tuple)
-        # Add to processed only if submitted or skipped by create_export_task
-        processed_indices.add(idx)
-        return True
+            # Add to task manager
+            task, description = task_tuple
+            if not dry_run:
+                task_manager.add_task(
+                    task, description, total_to_process, object_id)
+            return True
+        except Exception as e:
+            logging.error(
+                f"Error creating/adding task for feature with OBJECTID {object_id}: {str(e)}")
+            task_manager.increment_skipped(object_id)
+            return False
+
     except ee.EEException as e:
-        logging.error(f"Earth Engine error processing feature {idx}: {e}")
+        logging.error(
+            f"Earth Engine error processing feature with OBJECTID {object_id}: {e}")
+        task_manager.increment_skipped(object_id)
         return False
     except Exception as e:
-        logging.error(f"General error processing feature {idx}: {str(e)}")
+        logging.error(
+            f"General error processing feature with OBJECTID {object_id}: {str(e)}")
+        task_manager.increment_skipped(object_id)
         return False
+
+
+def process_features_parallel(filtered_data: ee.FeatureCollection,
+                              object_ids: List[int],
+                              processed_object_ids: Set[int],
+                              task_manager: TaskManager,
+                              batch_size: int = 4,
+                              country: str = None,
+                              progress_file: str = None,
+                              dry_run: bool = False,
+                              max_features: int = None) -> None:
+    """
+    Process features in parallel batches.
+
+    Args:
+        filtered_data: FeatureCollection to process
+        object_ids: List of OBJECTIDs to process
+        processed_object_ids: Set of already processed OBJECTIDs
+        task_manager: TaskManager instance for task handling
+        batch_size: Number of features to process in each batch
+        country: Optional country name to use in export folder
+        progress_file: Optional path to the progress file
+        dry_run: If True, simulate task creation without actually creating it
+        max_features: Maximum number of features to process
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import time
+
+    # Filter out already processed OBJECTIDs
+    object_ids_to_process = [
+        oid for oid in object_ids if oid not in processed_object_ids]
+
+    # Apply max_features limit if specified
+    if max_features is not None and len(object_ids_to_process) > max_features:
+        logging.info(
+            f"⬇︎ Limiting to {max_features} features as requested")
+        object_ids_to_process = object_ids_to_process[:max_features]
+
+    total_to_process = len(object_ids_to_process)
+
+    # Update the task manager's total_to_process value
+    task_manager.total_to_process = total_to_process
+
+    if total_to_process == 0:
+        logging.info("No new features to process")
+        return
+
+    logging.info(
+        f"🔄 Processing {total_to_process} features in parallel batches of {batch_size}")
+
+    # Process in batches to avoid memory issues
+    for batch_start in range(0, total_to_process, batch_size):
+        batch_end = min(batch_start + batch_size, total_to_process)
+        batch_object_ids = object_ids_to_process[batch_start:batch_end]
+
+        logging.info(
+            f"🚧Processing batch {batch_start//batch_size + 1} with {len(batch_object_ids)} features")
+
+        # Use ThreadPoolExecutor for parallel processing
+        with ThreadPoolExecutor(max_workers=min(batch_size, 10)) as executor:
+            # Submit all tasks in the batch
+            future_to_oid = {
+                executor.submit(process_single_feature, filtered_data, oid, processed_object_ids, task_manager, total_to_process, country, progress_file, dry_run): oid
+                for oid in batch_object_ids
+            }
+
+            # Process results as they complete
+            for future in as_completed(future_to_oid):
+                oid = future_to_oid[future]
+                try:
+                    success = future.result()
+                    if success:
+                        logging.info(
+                            f"✅ Successfully queued feature with OBJECTID {oid}")
+                    else:
+                        logging.warning(
+                            f"🚫 Failed to queue feature with OBJECTID {oid}")
+                except Exception as e:
+                    logging.error(
+                        f"💥 Error processing feature with OBJECTID {oid}: {str(e)}")
+
+        # Small pause between batches to avoid overwhelming Earth Engine
+        time.sleep(0.5)
 
 
 def process_in_test_mode(filtered_data: ee.FeatureCollection,
@@ -96,7 +201,7 @@ def process_in_test_mode(filtered_data: ee.FeatureCollection,
         filtered_data: FeatureCollection to process
         args: Command-line arguments
     """
-    logging.info(f"--- 🧪 Running in Test Mode (Index: {args.start_index}) ---")
+    logging.info(f"--- 🧪 Running in Test Mode (Single Feature) ---")
     try:
         single_point_collection = filtered_data.limit(1)
 
@@ -104,16 +209,17 @@ def process_in_test_mode(filtered_data: ee.FeatureCollection,
         single_point_count = single_point_collection.size()
         if single_point_count == 0:
             logging.error(
-                f"❌ Test mode: No feature found at position {args.start_index}. The collection may be smaller than expected.")
+                f"❌ Test mode: No feature found. The collection may be smaller than expected.")
             return
 
         # Get the first (and only) feature
         single_point = ee.Feature(single_point_collection.first())
+        single_point_id = single_point.get('OBJECTID').getInfo()
         logging.info(
-            f"🔍 Test mode: Processing feature at position {args.start_index}")
+            f"🔍 Test mode: Processing single feature with OBJECTID {single_point_id}")
 
         logging.info(f"🔧 Creating test export task...")
-        task_tuple = create_test_export_task(args.start_index, single_point)
+        task_tuple = create_test_export_task(single_point_id, single_point)
 
         if task_tuple:
             task, description = task_tuple
@@ -162,7 +268,7 @@ def process_in_test_mode(filtered_data: ee.FeatureCollection,
 
 def process_in_batch_mode(filtered_data: ee.FeatureCollection,
                           args: argparse.Namespace,
-                          processed_indices: Set[int],
+                          processed_object_ids: Set[int],
                           initial_completed: int,
                           initial_failed: int,
                           initial_skipped: int) -> None:
@@ -172,36 +278,19 @@ def process_in_batch_mode(filtered_data: ee.FeatureCollection,
     Args:
         filtered_data: FeatureCollection to process
         args: Command-line arguments
-        processed_indices: Set of already processed indices
+        processed_object_ids: Set of already processed OBJECTIDs
         initial_completed: Initial count of completed tasks
         initial_failed: Initial count of failed tasks
         initial_skipped: Initial count of skipped tasks
     """
     logging.info(f"--- 🚀 Running in Batch Mode ---")
 
-    # Check if collection has index property
-    has_index = False
-    try:
-        # Check if collection has features first
-        collection_size = filtered_data.size().getInfo()
-        if collection_size > 0:
-            # Safely get first feature
-            first_feature = filtered_data.limit(1).first()
-            if first_feature.get('index') is not None:
-                has_index = True
-                logging.info(
-                    "✅ Collection has 'index' property, using it for filtering.")
-        else:
-            logging.warning(
-                "⚠️ Collection is empty - cannot check for index property")
-    except Exception as e:
-        logging.info(f"⚠️ Error checking for 'index' property: {str(e)}")
-
     # Initialize task manager for batch processing
     task_manager = TaskManager(
         max_concurrent=MAX_CONCURRENT_TASKS,
         max_retries=MAX_RETRIES,
-        retry_delay=RETRY_DELAY_SECONDS
+        retry_delay=RETRY_DELAY_SECONDS,
+        progress_file=args.progress_file
     )
 
     # Pass initial loaded counts to task manager
@@ -209,144 +298,85 @@ def process_in_batch_mode(filtered_data: ee.FeatureCollection,
     task_manager.failed_count = initial_failed
     task_manager.skipped_count = initial_skipped
 
-    # Calculate total based on the range we intend to process
-    feature_count = filtered_data.size().getInfo()
-    max_idx = args.start_index + args.max_features if args.max_features else feature_count
-    # Ensure we don't exceed the available features
-    max_idx = min(max_idx, feature_count)
+    # Initialize processed object IDs
+    for obj_id in processed_object_ids:
+        task_manager.processed_object_ids.add(obj_id)
 
-    task_manager.total_count = max_idx - args.start_index
+    logging.info(
+        f"Loaded {len(task_manager.processed_object_ids)} processed object IDs from progress file")
 
     try:
+        # Get all OBJECTIDs from the collection
+        object_ids = filtered_data.aggregate_array('OBJECTID').getInfo()
+        if not object_ids:
+            logging.error("No OBJECTIDs found in the collection")
+            return
+
+        # Calculate total based on the range we intend to process
+        total_object_ids = len(object_ids)
+        if args.max_features:
+            logging.info(
+                f"User requested to limit processing to {args.max_features} features")
+            total_object_ids = min(total_object_ids, args.max_features)
+
+        # Set both total_count and total_to_process to ensure consistent reporting
+        task_manager.total_count = total_object_ids
+        task_manager.total_to_process = total_object_ids
+
         # Process in batches to avoid memory issues
         logging.info(
-            f"Starting batch processing from index {args.start_index} to {max_idx-1}")
+            f"Starting batch processing with {total_object_ids} features")
 
         # For balanced sampling between presence and absence (optional)
         if args.balanced_sampling and not (args.presence_only or args.absence_only):
             logging.info(
                 "⚖️ Using balanced sampling between presence and absence points")
-            # This requires separately filtering presence and absence points
+
+            # Filter presence and absence points
             presence_data = filtered_data.filter(
                 ee.Filter.eq('Locust Presence', 'PRESENT'))
             absence_data = filtered_data.filter(
                 ee.Filter.eq('Locust Presence', 'ABSENT'))
 
-            presence_count = presence_data.size().getInfo()
-            absence_count = absence_data.size().getInfo()
+            # Get OBJECTIDs for presence and absence
+            presence_object_ids = presence_data.aggregate_array(
+                'OBJECTID').getInfo()
+            absence_object_ids = absence_data.aggregate_array(
+                'OBJECTID').getInfo()
 
             logging.info(
-                f"📊 Found {presence_count} presence points and {absence_count} absence points")
+                f"📊 Found {len(presence_object_ids)} presence points and {len(absence_object_ids)} absence points")
 
             # Process equal numbers from each category
-            max_balanced_count = min(presence_count, absence_count)
-            processed_in_run = 0
+            max_balanced_count = min(
+                len(presence_object_ids), len(absence_object_ids))
+            if args.max_features:
+                # Half to each category
+                max_balanced_count = min(
+                    max_balanced_count, args.max_features // 2)
 
-            for i in range(max_balanced_count):
-                if i < args.start_index:
-                    continue
-
-                if args.max_features and processed_in_run >= args.max_features:
-                    break
-
-                # Process a presence point
-                presence_success = process_single_feature(
-                    presence_data, i, False, processed_indices, task_manager)
-                if presence_success:
-                    processed_in_run += 1
-
-                if args.max_features and processed_in_run >= args.max_features:
-                    break
-
-                # Process an absence point
-                absence_success = process_single_feature(
-                    absence_data, i, False, processed_indices, task_manager)
-                if absence_success:
-                    processed_in_run += 1
-
-                # Save progress periodically
-                if processed_in_run > 0 and processed_in_run % 10 == 0:
-                    save_progress(
-                        args.progress_file,
-                        list(processed_indices),
-                        task_manager.completed_count,
-                        task_manager.failed_count,
-                        task_manager.skipped_count
-                    )
-
-            # Process any remaining points if requested
-            if not args.balance_only:
-                remaining_to_process = args.max_features - \
-                    processed_in_run if args.max_features else float('inf')
-
-                if remaining_to_process > 0 and presence_count > max_balanced_count:
-                    remaining_presence = min(
-                        presence_count - max_balanced_count, remaining_to_process)
-                    logging.info(
-                        f"Processing {remaining_presence} additional presence points")
-
-                    for i in range(max_balanced_count, max_balanced_count + remaining_presence):
-                        success = process_single_feature(
-                            presence_data, i, False, processed_indices, task_manager)
-                        if success:
-                            processed_in_run += 1
-
-                        remaining_to_process -= 1
-                        if remaining_to_process <= 0:
-                            break
-
-                        # Save progress periodically
-                        if processed_in_run % 10 == 0:
-                            save_progress(
-                                args.progress_file,
-                                list(processed_indices),
-                                task_manager.completed_count,
-                                task_manager.failed_count,
-                                task_manager.skipped_count
-                            )
-
-                if remaining_to_process > 0 and absence_count > max_balanced_count:
-                    remaining_absence = min(
-                        absence_count - max_balanced_count, remaining_to_process)
-                    logging.info(
-                        f"Processing {remaining_absence} additional absence points")
-
-                    for i in range(max_balanced_count, max_balanced_count + remaining_absence):
-                        success = process_single_feature(
-                            absence_data, i, False, processed_indices, task_manager)
-                        if success:
-                            processed_in_run += 1
-
-                        # Save progress periodically
-                        if processed_in_run % 10 == 0:
-                            save_progress(
-                                args.progress_file,
-                                list(processed_indices),
-                                task_manager.completed_count,
-                                task_manager.failed_count,
-                                task_manager.skipped_count
-                            )
+            logging.info(
+                f"Processing {max_balanced_count} presence points and {max_balanced_count} absence points")
+            # Process absence points in parallel
+            if absence_object_ids:
+                absence_object_ids = absence_object_ids[:max_balanced_count]
+                logging.info(
+                    f"Processing {len(absence_object_ids)} absence points in parallel")
+                process_features_parallel(
+                    absence_data, absence_object_ids, task_manager.processed_object_ids, task_manager, args.batch_size, args.country, args.progress_file, args.dry_run)
+            # Process presence points in parallel
+            if presence_object_ids:
+                presence_object_ids = presence_object_ids[:max_balanced_count]
+                logging.info(
+                    f"Processing {len(presence_object_ids)} presence points in parallel")
+                process_features_parallel(
+                    presence_data, presence_object_ids, task_manager.processed_object_ids, task_manager, args.batch_size, args.country, args.progress_file, args.dry_run)
 
         else:
-            # Process sequentially (original method)
-            processed_in_run = 0
-            for current_index in range(args.start_index, max_idx):
-                success = process_single_feature(
-                    filtered_data, current_index, has_index, processed_indices, task_manager)
-                if success:  # Only count successfully submitted/skipped features towards progress
-                    processed_in_run += 1
-
-                # Save progress periodically
-                if processed_in_run > 0 and processed_in_run % 10 == 0:
-                    logging.info(
-                        f"Processed {processed_in_run} features in this run. Saving progress...")
-                    save_progress(
-                        args.progress_file,
-                        list(processed_indices),
-                        task_manager.completed_count,
-                        task_manager.failed_count,
-                        task_manager.skipped_count
-                    )
+            # Process all features in parallel
+            process_features_parallel(
+                filtered_data, object_ids, task_manager.processed_object_ids, task_manager,
+                args.batch_size, args.country, args.progress_file, args.dry_run, args.max_features)
 
         # Wait for all tasks to complete
         logging.info(
@@ -358,14 +388,7 @@ def process_in_batch_mode(filtered_data: ee.FeatureCollection,
 
     except KeyboardInterrupt:
         logging.info("⚠️ Interrupted by user. Saving progress...")
-        # Save progress immediately on interrupt
-        save_progress(
-            args.progress_file,
-            list(processed_indices),
-            task_manager.completed_count,
-            task_manager.failed_count,
-            task_manager.skipped_count
-        )
+        # Tasks will be saved through TaskManager.shutdown()
     except Exception as e:
         logging.error(f"❌ Error in main batch processing loop: {str(e)}")
     finally:
@@ -373,76 +396,7 @@ def process_in_batch_mode(filtered_data: ee.FeatureCollection,
         logging.info("🛑 Shutting down task manager...")
         task_manager.shutdown()
 
-        # Save final progress
-        logging.info("💾 Saving final progress...")
-        save_progress(
-            args.progress_file,
-            list(processed_indices),
-            task_manager.completed_count,
-            task_manager.failed_count,
-            task_manager.skipped_count
-        )
-
         logging.info("✨ Script completed. Final progress saved.")
-
-
-def debug_collection(collection, description="Collection", limit=3):
-    """
-    Debug helper function to inspect a collection.
-
-    Args:
-        collection: Earth Engine FeatureCollection to inspect
-        description: Description of the collection for logging
-        limit: Number of features to inspect
-
-    Returns:
-        None
-    """
-    try:
-        logging.info(f"\n--- DEBUG: {description} ---")
-
-        # Get collection size
-        size = collection.size().getInfo()
-        logging.info(f"Collection size: {size}")
-
-        if size == 0:
-            logging.warning("Collection is empty!")
-            return
-
-        # Try to safely get first feature
-        try:
-            first_feature_info = collection.limit(1).first().getInfo()
-            if first_feature_info and 'properties' in first_feature_info:
-                prop_keys = list(first_feature_info['properties'].keys())
-                logging.info(f"First feature property keys: {prop_keys}")
-
-                # Check key properties
-                for key in ['Obs Date', 'Locust Presence', 'Year', 'Longitude', 'Latitude']:
-                    if key in first_feature_info['properties']:
-                        value = first_feature_info['properties'][key]
-                        logging.info(f"  {key}: {value}")
-                    else:
-                        logging.info(f"  {key}: Not found")
-            else:
-                logging.warning("Could not retrieve feature properties")
-        except Exception as e:
-            logging.error(f"Error inspecting first feature: {str(e)}")
-
-        # Test pagination
-        try:
-            if size > 1:
-                # Use system:index to sort and format the number as a string for the second parameter
-                second_feature = collection.sort('system:index').limit(
-                    1, ee.Number(1).format("d")).first().getInfo()
-                if second_feature:
-                    logging.info(f"Second feature found with pagination")
-        except Exception as e:
-            logging.error(f"Error testing pagination: {str(e)}")
-
-    except Exception as e:
-        logging.error(f"Error debugging collection: {str(e)}")
-
-    logging.info("--- END DEBUG ---\n")
 
 
 def main():
@@ -454,8 +408,6 @@ def main():
                         help='Run with a single test point')
     parser.add_argument('--batch-size', type=int, default=DEFAULT_BATCH_SIZE,
                         help='Number of features to process in one batch')
-    parser.add_argument('--start-index', type=int, default=0,
-                        help='Index to start processing from')
     parser.add_argument('--max-features', type=int, default=None,
                         help='Maximum number of features to process')
     parser.add_argument('--presence-only', action='store_true',
@@ -464,19 +416,24 @@ def main():
                         help='Process only absence points')
     parser.add_argument('--min-year', type=int, default=None,
                         help='Minimum year to include (e.g., 2015)')
+    parser.add_argument('--start-date', type=str, default=None,
+                        help='Start date in YYYY-MM-DD format (e.g., 2015-01-01)')
+    parser.add_argument('--end-date', type=str, default=None,
+                        help='End date in YYYY-MM-DD format (e.g., 2020-12-31)')
     parser.add_argument('--balanced-sampling', action='store_true',
                         help='Use balanced sampling between presence and absence points')
     parser.add_argument('--balance-only', action='store_true',
                         help='Process only balanced samples (equal number of presence and absence)')
     parser.add_argument('--progress-file', type=str, default=DEFAULT_PROGRESS_FILE,
                         help='File to save/load progress')
+    parser.add_argument('--update-progress', type=str, default=DEFAULT_PROGRESS_FILE,
+                        help='Update progress file with new processed features')
     parser.add_argument('--log-file', type=str, default=DEFAULT_LOG_FILE,
                         help='Log file name')
-    # Add country filter and dry run options
     parser.add_argument('--country', type=str, default=None,
                         help='Filter data by country name (e.g., "Ethiopia")')
     parser.add_argument('--dry-run', action='store_true',
-                        help='Simulate processing without creating actual export tasks')
+                        help='Run in dry-run mode (no actual exports will be created)')
     args = parser.parse_args()
 
     # Set up logging
@@ -484,10 +441,6 @@ def main():
 
     # Initialize Earth Engine
     initialize_ee()
-
-    # Get Ethiopia boundary and set it for index calculations
-    et_boundary = get_ethiopia_boundary()
-    set_region_boundary(et_boundary)
 
     # Create global variables needed for calculation
     logging.info("Loading FAO locust data...")
@@ -506,20 +459,25 @@ def main():
         logging.error(f"An unexpected error occurred during data loading: {e}")
         return
 
-    original_count = locust_data.size().getInfo()
-
-    if original_count > 0:
+    # Filter by date range if specified
+    if args.start_date is not None or args.end_date is not None:
         try:
-            first_feature = locust_data.limit(1).first()
-            property_names = first_feature.propertyNames()
+            if args.start_date:
+                start_date = ee.Date(args.start_date)
+                locust_data = locust_data.filter(
+                    ee.Filter.gte('Obs Date', start_date))
+            if args.end_date:
+                end_date = ee.Date(args.end_date)
+                locust_data = locust_data.filter(
+                    ee.Filter.lte('Obs Date', end_date))
+
+            count_after_date_filter = locust_data.size().getInfo()
             logging.info(
-                f"First feature properties: {property_names.getInfo()}")
+                f"Features after date filtering: {count_after_date_filter} (removed {original_count - count_after_date_filter})")
+            original_count = count_after_date_filter
         except Exception as e:
-            logging.warning(
-                f"Could not get first feature properties: {str(e)}")
-    else:
-        logging.warning(
-            "Collection is empty - cannot check feature properties")
+            logging.error(f"Error applying date filter: {str(e)}")
+            return
 
     # Filter by minimum year if specified
     if args.min_year is not None:
@@ -527,8 +485,8 @@ def main():
             ee.Filter.gte('Year', args.min_year))
         count_after_year_filter = locust_data.size().getInfo()
         logging.info(
-            f"Features after filtering for year >= {args.min_year}: {count_after_year_filter} (removed {count_after_geom_filter - count_after_year_filter})")
-        count_after_geom_filter = count_after_year_filter
+            f"Features after filtering for year >= {args.min_year}: {count_after_year_filter} (removed {original_count - count_after_year_filter})")
+        original_count = count_after_year_filter
 
     # Filter for presence and absence points based on the geometry-added collection
     if args.presence_only:
@@ -548,7 +506,7 @@ def main():
         filtered_data = filtered_data.filter(
             ee.Filter.eq('Country', args.country))
         logging.info(
-            f"Features after country filter: {filtered_data.size().getInfo()}")
+            f"🗺️ Features after country filter: {filtered_data.size().getInfo()}")
 
     # Get final count of features to process
     feature_count = filtered_data.size().getInfo()
@@ -556,17 +514,16 @@ def main():
         f'Total features to process after all filters: {feature_count}')
 
     if feature_count == 0:
-        logging.warning("No features remaining after filtering. Exiting.")
+        logging.warning("🚫 No features remaining after filtering. Exiting.")
         return
 
-    # Ensure start_index is valid
-    if args.start_index >= feature_count:
-        logging.error(
-            f"Start index {args.start_index} is out of bounds (total features: {feature_count}). Exiting.")
-        return
+    # Update progress file if specified
+    # if args.update_progress:
+    #     update_progress_file(args.progress_file)
+    #     return
 
     # Load progress if available
-    processed_indices, completed_count, failed_count, skipped_count = load_progress(
+    processed_object_ids, completed_count, failed_count, skipped_count = load_progress(
         args.progress_file)
 
     # Log processing counts for presence/absence
@@ -586,10 +543,10 @@ def main():
             "🔍 DRY RUN MODE ENABLED - No actual exports will be performed")
         if args.test:
             logging.info(
-                f"🧪 Would run test mode on feature at index {args.start_index}")
+                f"🧪 Would run test mode on a single point")
         else:
             logging.info(
-                f"📊 Would process {feature_count} features from index {args.start_index}")
+                f"📊 Would process {feature_count} features")
             if args.presence_only:
                 logging.info(f"🟢 Would only process presence points")
             elif args.absence_only:
@@ -604,15 +561,13 @@ def main():
     # Test mode - process a single point
     if args.test:
         logging.info("Running in test mode with detailed debugging...")
-        # Debug the filtered collection right before processing
-        # debug_collection(filtered_data, "Final Filtered Collection")
         process_in_test_mode(filtered_data, args)
     else:
         # Batch mode - process multiple points
         process_in_batch_mode(
             filtered_data,
             args,
-            processed_indices,
+            processed_object_ids,
             completed_count,
             failed_count,
             skipped_count
