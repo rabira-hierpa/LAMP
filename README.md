@@ -81,6 +81,10 @@ The script generates multi-band images inspired by the PLAN (Predictor of Locust
 
 - Soil texture
 
+## Exported Dataset
+
+The exported dataset can be viewed from [GDrive link](https://drive.google.com/drive/folders/1V9PdYcI0quQo7ipmqFPtpppagen2CHHY?usp=sharing)
+
 ## Installation
 
 The package is designed to be used as a local module. Clone the repository and ensure you have the required dependencies installed:
@@ -189,6 +193,6 @@ The modular structure makes it easy to extend the package with new functionality
 
 ## Troubleshooting
 
-- If you encounter rate limiting errors, try reducing the MAX_CONCURRENT_TASKS value in config.py
+- If you encounter rate-limiting errors, try reducing the MAX_CONCURRENT_TASKS value in config.py
 - For memory issues, reduce the batch size with the --batch-size option
 - Use the --dry-run option to validate your parameters before starting a long-running job
