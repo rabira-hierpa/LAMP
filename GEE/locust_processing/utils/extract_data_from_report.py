@@ -48,19 +48,22 @@ def read_large_csv(file_path, required_columns):
     # Extract only the year part in case there are additional characters
     year = year.str.extract(r'(\d{4})', expand=False)
 
+    # Filter out by country
+    df = df[df['Country'] == 'Ethiopia']
+
     # Create formatted date YYYY-MM-DD
     df['formatted_date'] = year + '-' + month + '-' + day
 
     print("Date formatting example:")
     print(df[['Obs Date', 'formatted_date']].head())
 
-    # Filter out rows where year is less than 2015
-    df = df[df['Year'] >= 2015]
+    # Filter out rows where year is less than 2019
+    df = df[df['Year'] >= 2019]
 
     # Sort by formatted_date
     df = df.sort_values(by='formatted_date', ascending=True)
 
-    # Add a new column with 0 based index from the row that starts with 2015
+    # Add a new column with 0 based index from the row that starts with 2019
     df = df.reset_index(drop=True)  # Reset index to be zero-based
     df['index'] = df.index  # Add the zero-based index as a column
 
@@ -91,6 +94,6 @@ if __name__ == "__main__":
     print(df.head())
 
     # # Save the extracted data to a new CSV file if needed
-    output_path = "/Users/rz/Msc/Data/FAO_archival_data_extracted_2015.csv"
+    output_path = "/Users/rz/Msc/Data/FAO_archival_data_extracted_2015_Ethiopia.csv"
     df.to_csv(output_path, index=False)
     print(f"\nExtracted data saved to: {output_path}")
