@@ -1,0 +1,127 @@
+<svg width = "1000" height = "600" xmlns = "http://www.w3.org/2000/svg" >
+  <defs >
+    <!-- Arrow marker - ->
+    <marker id = "arrowhead" markerWidth = "10" markerHeight = "7"
+            refX = "10" refY = "3.5" orient = "auto" >
+      <polygon points="0 0, 10 3.5, 0 7" fill="#333" />
+    </marker>
+    
+    <!-- Styles -->
+    <style>
+      .input-box { fill: #e3f2fd; stroke: #1976d2; stroke-width: 2; }
+      .process-box { fill: #f3e5f5; stroke: #7b1fa2; stroke-width: 2; }
+      .transformer-box { fill: #fff3e0; stroke: #f57c00; stroke-width: 2; }
+      .output-box { fill: #e8f5e8; stroke: #388e3c; stroke-width: 2; }
+      .text { font-family: Arial, sans-serif; font-size: 12px; text-anchor: middle; dominant-baseline: middle; }
+      .title-text { font-family: Arial, sans-serif; font-size: 14px; font-weight: bold; text-anchor: middle; dominant-baseline: middle; }
+      .arrow { stroke: #333; stroke-width: 2; fill: none; marker-end: url(#arrowhead); }
+      .container { fill: none; stroke: #666; stroke-width: 1; stroke-dasharray: 5,5; }
+    </style>
+  </defs>
+  
+  <!-- Title -->
+  <text x="500" y="25" class="title-text">MRH-ViT Architecture for Desert Locust Prediction</text>
+  
+  <!-- Input Layer -->
+  <rect x="50" y="80" width="140" height="60" rx="5" class="input-box"/>
+  <text x="120" y="105" class="text">Input: Satellite Data</text>
+  <text x="120" y="120" class="text">59 × 41 × 41</text>
+  
+  <!-- Multi-Resolution Patch Embedding -->
+  <rect x="250" y="80" width="160" height="60" rx="5" class="process-box"/>
+  <text x="330" y="105" class="text">Multi-Resolution</text>
+  <text x="330" y="120" class="text">Patch Embedding</text>
+  
+  <!-- Multi-Scale Feature Extraction -->
+  <rect x="470" y="80" width="160" height="60" rx="5" class="process-box"/>
+  <text x="550" y="105" class="text">Multi-Scale</text>
+  <text x="550" y="120" class="text">Feature Extraction</text>
+  
+  <!-- Scale Boxes -->
+  <rect x="370" y="180" width="120" height="50" rx="5" class="process-box"/>
+  <text x="430" y="200" class="text">Scale 1:</text>
+  <text x="430" y="215" class="text">1×1 patches</text>
+  
+  <rect x="520" y="180" width="120" height="50" rx="5" class="process-box"/>
+  <text x="580" y="200" class="text">Scale 2:</text>
+  <text x="580" y="215" class="text">2×2 patches</text>
+  
+  <rect x="670" y="180" width="120" height="50" rx="5" class="process-box"/>
+  <text x="730" y="200" class="text">Scale 3:</text>
+  <text x="730" y="215" class="text">4×4 patches</text>
+  
+  <!-- Feature Grouping -->
+  <rect x="470" y="280" width="160" height="60" rx="5" class="process-box"/>
+  <text x="550" y="305" class="text">Feature Grouping +</text>
+  <text x="550" y="320" class="text">Position Encoding</text>
+  
+  <!-- Transformer Container -->
+  <rect x="200" y="380" width="200" height="140" rx="5" class="container"/>
+  <text x="300" y="400" class="text">Transformer Block</text>
+  
+  <!-- Transformer Components -->
+  <rect x="210" y="420" width="180" height="40" rx="3" class="transformer-box"/>
+  <text x="300" y="435" class="text">Multi-Head Self-Attention</text>
+  <text x="300" y="450" class="text">(Physics-Informed)</text>
+  
+  <rect x="210" y="470" width="180" height="40" rx="3" class="transformer-box"/>
+  <text x="300" y="490" class="text">Feed-Forward Network</text>
+  
+  <!-- Transformer Encoder -->
+  <rect x="450" y="420" width="160" height="60" rx="5" class="transformer-box"/>
+  <text x="530" y="445" class="text">Transformer Encoder</text>
+  <text x="530" y="460" class="text">× L layers</text>
+  
+  <!-- Output Section -->
+  <rect x="680" y="400" width="140" height="50" rx="5" class="output-box"/>
+  <text x="750" y="420" class="text">Global Average</text>
+  <text x="750" y="435" class="text">Pooling</text>
+  
+  <rect x="680" y="480" width="140" height="50" rx="5" class="output-box"/>
+  <text x="750" y="505" class="text">Linear Classifier</text>
+  
+  <rect x="680" y="560" width="140" height="50" rx="5" class="output-box"/>
+  <text x="750" y="580" class="text">Output: Locust</text>
+  <text x="750" y="595" class="text">Presence Probability</text>
+  
+  <!-- Arrows -->
+  <!-- Main flow -->
+  <line x1="190" y1="110" x2="240" y2="110" class="arrow"/>
+  <line x1="410" y1="110" x2="460" y2="110" class="arrow"/>
+  <line x1="550" y1="140" x2="550" y2="170" class="arrow"/>
+  
+  <!-- Scale connections -->
+  <line x1="520" y1="155" x2="430" y2="175" class="arrow"/>
+  <line x1="550" y1="155" x2="580" y2="175" class="arrow"/>
+  <line x1="580" y1="155" x2="730" y2="175" class="arrow"/>
+  
+  <!-- Feature grouping connections -->
+  <line x1="430" y1="230" x2="520" y2="270" class="arrow"/>
+  <line x1="580" y1="230" x2="550" y2="270" class="arrow"/>
+  <line x1="730" y1="230" x2="580" y2="270" class="arrow"/>
+  
+  <!-- Transformer flow -->
+  <line x1="550" y1="340" x2="400" y2="370" class="arrow"/>
+  <line x1="300" y1="460" x2="300" y2="465" class="arrow"/>
+  <line x1="400" y1="450" x2="440" y2="450" class="arrow"/>
+  
+  <!-- Output flow -->
+  <line x1="610" y1="450" x2="670" y2="425" class="arrow"/>
+  <line x1="750" y1="450" x2="750" y2="470" class="arrow"/>
+  <line x1="750" y1="530" x2="750" y2="550" class="arrow"/>
+  
+  <!-- Legend -->
+  <g transform="translate(50, 550)">
+    <rect x="0" y="0" width="20" height="15" class="input-box"/>
+    <text x="25" y="12" class="text" style="font-size: 10px; text-anchor: start;">Input</text>
+    
+    <rect x="80" y="0" width="20" height="15" class="process-box"/>
+    <text x="105" y="12" class="text" style="font-size: 10px; text-anchor: start;">Processing</text>
+    
+    <rect x="180" y="0" width="20" height="15" class="transformer-box"/>
+    <text x="205" y="12" class="text" style="font-size: 10px; text-anchor: start;">Transformer</text>
+    
+    <rect x="290" y="0" width="20" height="15" class="output-box"/>
+    <text x="315" y="12" class="text" style="font-size: 10px; text-anchor: start;">Output</text>
+  </g>
+</svg>
