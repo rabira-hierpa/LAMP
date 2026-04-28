@@ -21,3 +21,6 @@ private-key.json
 GEE/locust_processing/__tests__/test_object_ids.json
 GEE/locust_processing/__tests__/test_progress.json
 .DS_Store
+ethiopin_export_progress_may_5_bak.json
+
+*.tif
